@@ -6,16 +6,6 @@
 
 ---
 
-## ⚠️ 脚本说明
-
-`scripts/migrate_batch.py` **仅为参考示例**，展示批量迁移的基本逻辑。实际使用时：
-
-1. **Token 不要硬编码** — 绝不在脚本中写死任何密钥
-2. **配置文件路径可自定义** — 使用 `--token-config` 指定自己的配置文件
-3. **源/目标库 ID 通过参数传入** — 不是写死在脚本里
-
----
-
 ## 功能特性
 
 | 功能 | 说明 |
@@ -24,6 +14,7 @@
 | 🧹 **格式清洗** | LLM 驱动的文档清洗：去广告、清 HTML 残留、修复 Markdown 格式 |
 | 🔍 **智能去重** | 按标题搜索 → 逐级内容比对 → 自动跳过重复文档 |
 | ✂️ **大文档拆分** | >50000 字（约 200KB）的文档自动按结构拆分，保持代码块完整性 |
+| 🗑️ **二进制过滤** | 内容采样自动检测并跳过二进制文件（图片/压缩包等） |
 | 📂 **目录组织** | 按主题自动分类、层级建目录、批量挂文档 |
 | 💾 **断点续传** | 进度文件持久化，中断后精确接续 |
 | 🏷️ **格式兼容** | 支持 Markdown 和 Lake 格式（自动转为 Markdown） |
@@ -59,53 +50,6 @@
 ```
 继续整理《废弃0》
 ```
-
-### 批量脚本
-
-`scripts/migrate_batch.py` **仅为参考示例**。使用前请：
-
-1. 复制到自己的项目目录
-2. 根据需要修改逻辑（如清洗规则、去重策略等）
-
-**配置方式**（三选一，优先级从高到低）：
-
-```bash
-# 方式1: 环境变量
-export YUQUE_TOKEN="your_token_here"
-python migrate_batch.py --src 65894942 --tgt 78699632 --total 5200
-
-# 方式2: 指定 Token 配置文件
-python migrate_batch.py --src 65894942 --tgt 78699632 --total 5200 \
-  --token-config /path/to/my-config.json
-
-# 方式3: 使用默认配置文件
-# 默认路径: ~/.openclaw/workspace/utils/yuque/yuque-ai/yuque-config.json
-python migrate_batch.py --src 65894942 --tgt 78699632 --total 5200
-```
-
-**完整参数**：
-
-```
---src           源知识库 ID（必填）
---tgt           目标知识库 ID（必填）
---total         源库文档总数（可选，默认 5000）
---config        迁移配置文件路径（替代 --src/--tgt/--total）
---progress      进度文件保存路径（可选）
---token-config  Token 配置文件路径（JSON 格式，含 token 字段）
-```
-
-**配置文件格式**（`--config` 或 `--token-config` 通用）：
-
-```json
-{
-  "token": "your_yuque_token",
-  "src_book": 65894942,
-  "tgt_book": 78699632,
-  "total": 5200
-}
-```
-
-脚本会自动读取进度文件，从断点处续传。
 
 ---
 
@@ -155,6 +99,10 @@ flowchart TD
 - 直接取 `body` 字段（已是 Markdown 链接文本）
 - **不做格式清洗**，标题 + 链接原样保留
 - 标记为 "lake 格式已转为 markdown"
+
+### 二进制文件
+
+通过内容采样检测（非 ASCII + 控制字符 > 25%），判定为二进制则直接跳过，不记入失败。
 
 ### 未知格式
 
@@ -226,8 +174,7 @@ flowchart TD
 ```
 📦 《废弃0》(5200篇) → 废弃19/
    ├─ 复制: 5145 篇
-   ├─ 跳过: 50 篇（空文档）
-   ├─ 格式修复: 315 篇
+   ├─ 跳过: 0 篇（去重）50 篇（空文档）0 篇（二进制）
    ├─ 大文档: 23 篇（已拆分）
    ├─ 含附件文档: 12 篇（清单，附件无法迁移，请手动处理）
    ├─ 失败: 5 篇（清单）
@@ -252,8 +199,6 @@ flowchart TD
 ```
 yuque-migration/
 ├── SKILL.md              # Skill 定义与完整流程文档
-├── scripts/
-│   └── migrate_batch.py  # 批量迁移脚本
 ├── progress/             # 进度文件（.gitignore 排除）
 └── README.md             # 本文件
 ```
