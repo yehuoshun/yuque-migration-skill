@@ -8,11 +8,11 @@
 
 ## 安装
 
-通过 OpenClaw Skill 市场安装：
+```bash
+git clone https://github.com/yehuoshun/yuque-migration-skill.git
+```
 
-```
-/openclaw skill install yuque-migration
-```
+或通过 OpenClaw 直接安装本仓库。
 
 ## 前置条件
 
