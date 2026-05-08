@@ -6,6 +6,16 @@
 
 ---
 
+## ⚠️ 脚本说明
+
+`scripts/migrate_batch.py` **仅为参考示例**，展示批量迁移的基本逻辑。实际使用时：
+
+1. **Token 不要硬编码** — 绝不在脚本中写死任何密钥
+2. **配置文件路径可自定义** — 使用 `--token-config` 指定自己的配置文件
+3. **源/目标库 ID 通过参数传入** — 不是写死在脚本里
+
+---
+
 ## 功能特性
 
 | 功能 | 说明 |
@@ -52,10 +62,47 @@
 
 ### 批量脚本
 
-如需直接命令行执行：
+`scripts/migrate_batch.py` **仅为参考示例**。使用前请：
+
+1. 复制到自己的项目目录
+2. 根据需要修改逻辑（如清洗规则、去重策略等）
+
+**配置方式**（三选一，优先级从高到低）：
 
 ```bash
-python3 scripts/migrate_batch.py
+# 方式1: 环境变量
+export YUQUE_TOKEN="your_token_here"
+python migrate_batch.py --src 65894942 --tgt 78699632 --total 5200
+
+# 方式2: 指定 Token 配置文件
+python migrate_batch.py --src 65894942 --tgt 78699632 --total 5200 \
+  --token-config /path/to/my-config.json
+
+# 方式3: 使用默认配置文件
+# 默认路径: ~/.openclaw/workspace/utils/yuque/yuque-ai/yuque-config.json
+python migrate_batch.py --src 65894942 --tgt 78699632 --total 5200
+```
+
+**完整参数**：
+
+```
+--src           源知识库 ID（必填）
+--tgt           目标知识库 ID（必填）
+--total         源库文档总数（可选，默认 5000）
+--config        迁移配置文件路径（替代 --src/--tgt/--total）
+--progress      进度文件保存路径（可选）
+--token-config  Token 配置文件路径（JSON 格式，含 token 字段）
+```
+
+**配置文件格式**（`--config` 或 `--token-config` 通用）：
+
+```json
+{
+  "token": "your_yuque_token",
+  "src_book": 65894942,
+  "tgt_book": 78699632,
+  "total": 5200
+}
 ```
 
 脚本会自动读取进度文件，从断点处续传。

@@ -18,21 +18,32 @@
 import subprocess, json, time, sys, os, argparse
 
 # ── Token 加载 ─────────────────────────────────────────────────────────────
-# 优先级：环境变量 YUQUE_TOKEN > 配置文件
-# 配置文件路径：同级目录的 migrate_config.json 或指定的 --config 文件
-def _load_token():
-    """加载语雀 API Token，禁止硬编码在脚本中。"""
+# 优先级：环境变量 YUQUE_TOKEN > --token-config 指定的配置文件 > 默认配置文件
+# Token 配置文件格式：{"token": "your_yuque_token", ...}
+def _load_token(token_config=None):
+    """加载语雀 API Token，禁止硬编码在脚本中。
+    
+    Args:
+        token_config: token 配置文件路径（可选）
+    """
+    # 1. 环境变量
     token = os.environ.get("YUQUE_TOKEN", "")
     if token:
         return token
-    # 尝试从配置文件加载
-    cfg = os.path.expanduser("~/.openclaw/workspace/utils/yuque/yuque-ai/yuque-config.json")
-    if os.path.exists(cfg):
-        with open(cfg) as f:
+    # 2. 用户指定的配置文件
+    if token_config and os.path.exists(token_config):
+        with open(os.path.expanduser(token_config)) as f:
             return json.load(f).get("token", "")
-    raise RuntimeError("未找到语雀 Token。请设置环境变量 YUQUE_TOKEN 或确保配置文件存在。")
+    # 3. 默认配置文件
+    default_cfg = os.path.expanduser("~/.openclaw/workspace/utils/yuque/yuque-ai/yuque-config.json")
+    if os.path.exists(default_cfg):
+        with open(default_cfg) as f:
+            return json.load(f).get("token", "")
+    raise RuntimeError("未找到语雀 Token。请通过以下方式之一提供：\n"
+                      "  1. 环境变量 YUQUE_TOKEN\n"
+                      "  2. --token-config 指定配置文件\n"
+                      "  3. 默认配置文件 ~/.openclaw/workspace/utils/yuque/yuque-ai/yuque-config.json")
 
-TOKEN = _load_token()
 UA = "OpenClaw-Migration"
 API = "https://www.yuque.com/api/v2"
 
@@ -51,7 +62,12 @@ def _load_config():
     parser.add_argument("--total", type=int, help="源库文档总数（用于进度显示）")
     parser.add_argument("--config", type=str, help="配置文件路径（JSON 格式）")
     parser.add_argument("--progress", type=str, help="进度文件保存路径")
+    parser.add_argument("--token-config", type=str, help="Token 配置文件路径（JSON 格式，含 token 字段）")
     args = parser.parse_args()
+    
+    # 加载 Token
+    global TOKEN
+    TOKEN = _load_token(args.token_config)
     
     # 从命令行参数
     if args.src and args.tgt:
