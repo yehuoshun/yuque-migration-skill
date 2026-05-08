@@ -4,6 +4,8 @@
 
 **核心理念：复制不搬。原库完全不动，目标库接收清洗后的内容。**
 
+**作者：[yehuoshun](https://github.com/yehuoshun)**
+
 ---
 
 ## 安装
