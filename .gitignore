@@ -1,5 +1,0 @@
-.gitignore
-progress/
-scripts/migrate.log
-__pycache__/
-scripts/migrate_batch.py
