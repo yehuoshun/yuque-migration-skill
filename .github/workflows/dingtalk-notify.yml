@@ -39,14 +39,7 @@ print(commit_list+more)
               TEXT="## Issue * yuque-migration-skill\n${{ github.event.issue.title }}"
               ;;
           esac
+          TEXT_JSON=$(echo "$TEXT" | python3 -c "import json,sys; print(json.dumps(sys.stdin.read()))")
           curl -s -X POST "$DINGTALK_WEBHOOK" \
             -H "Content-Type: application/json" \
-            -d @- <<EOF
-          {
-            "msgtype": "markdown",
-            "markdown": {
-              "title": "yuque-migration-skill - $EVENT",
-              "text": $(echo "$TEXT" | python3 -c "import json,sys; print(json.dumps(sys.stdin.read()))")
-            }
-          }
-          EOF
+            -d "{\"msgtype\":\"markdown\",\"markdown\":{\"title\":\"yuque-migration-skill - $EVENT\",\"text\":$TEXT_JSON}}"
