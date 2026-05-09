@@ -1,0 +1,22 @@
+name: 飞书推送
+on:
+  push:
+    branches: [main]
+  pull_request:
+    types: [opened, closed]
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 推送事件
+        uses: foxundermoon/feishu-action@v1
+        with:
+          url: ${{ secrets.FEISHU_WEBHOOK }}
+          msg_type: interactive
+          title: |
+            🐙 ${{ github.actor }} ${{ github.event_name == 'push' && 'pushed to' || 'PR →' }} ${{ github.ref_name }}
+          text: |
+            ${{ github.event_name == 'push' && github.event.head_commit.message || github.event.pull_request.title }}
+            🔗 ${{ github.event_name == 'push' && github.event.compare || github.event.pull_request.html_url }}
+            📦 ${{ github.repository }}
