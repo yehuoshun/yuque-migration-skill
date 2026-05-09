@@ -25,3 +25,10 @@ jobs:
             [查看文档](https://github.com/${{ github.repository }}#readme)
           files: SKILL.md
           make_latest: true
+
+      - name: Notify DingTalk
+        if: always()
+        env:
+          DINGTALK_WEBHOOK: ${{ secrets.DINGTALK_WEBHOOK }}
+          COMMIT_MSG: ${{ github.event.head_commit.message }}
+        run: python3 scripts/release-notify.py
