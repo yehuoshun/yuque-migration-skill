@@ -1,11 +1,10 @@
-name: Release Skill Zip
+name: Release SKILL.md
 
 on:
   push:
     branches: [main]
-    paths-ignore:
-      - '.github/**'
-      - '.gitignore'
+    paths:
+      - 'SKILL.md'
 
 jobs:
   release:
@@ -15,13 +14,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Package skill
-        run: |
-          mkdir -p dist/yuque-migration
-          cp -r SKILL.md README.md scripts/ dist/yuque-migration/
-          cd dist
-          zip -r yuque-migration.zip yuque-migration/
-
       - name: Update Release
         uses: softprops/action-gh-release@v2
         with:
@@ -30,18 +22,6 @@ jobs:
           body: |
             ## 📦 语雀知识库迁移 Skill
 
-            将语雀知识库内容复制整理到另一个知识库。
-
-            ### 安装
-            ```bash
-            # 方式一：下载 zip 解压到 skills 目录
-            # 方式二：通过 OpenClaw 直接安装本仓库
-            ```
-
-            ### 包含文件
-            - `SKILL.md` — 技能定义
-            - `scripts/` — 迁移脚本
-
             [查看文档](https://github.com/${{ github.repository }}#readme)
-          files: dist/yuque-migration.zip
+          files: SKILL.md
           make_latest: true
