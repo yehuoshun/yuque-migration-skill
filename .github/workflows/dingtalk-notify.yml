@@ -1,32 +1,62 @@
-name: 钉钉推送
+name: DingTalk Notify
+
 on:
   push:
-    branches: [main]
+    branches: ["main", "master"]
   pull_request:
-    types: [opened, closed]
+    types: [opened, closed, reopened]
+  issues:
+    types: [opened, closed, reopened]
 
 jobs:
   notify:
     runs-on: ubuntu-latest
     steps:
-      - name: 推送到钉钉
+      - name: Send to DingTalk
         env:
           DINGTALK_WEBHOOK: ${{ secrets.DINGTALK_WEBHOOK }}
         run: |
-          if [ "${{ github.event_name }}" = "push" ]; then
-            MSG="🐙 ${{ github.actor }} pushed to **${{ github.ref_name }}**
-          > ${{ github.event.head_commit.message }}
+          # 根据事件类型拼消息
+          EVENT="${{ github.event_name }}"
 
-          📦 ${{ github.repository }}
-          🔗 [${{ github.event.compare }}](${{ github.event.compare }})"
-          else
-            MSG="🐙 ${{ github.actor }} ${{ github.event.action }} PR on **${{ github.ref_name }}**
-          > ${{ github.event.pull_request.title }}
-
-          📦 ${{ github.repository }}
-          🔗 [${{ github.event.pull_request.html_url }}](${{ github.event.pull_request.html_url }})"
-          fi
+          case "$EVENT" in
+            push)
+              COMMITS=$(echo '${{ toJson(github.event.commits) }}' | python3 -c "
+import json,sys
+data=json.load(sys.stdin)
+msgs=[]
+for c in data[:5]:
+    msg=c.get('message','').split('\n')[0][:80]
+    author=c.get('author',{}).get('name','unknown')
+    msgs.append(f'- {author}: {msg}')
+commit_list='\n'.join(msgs)
+more=f'\n...等{len(data)}条提交' if len(data)>5 else ''
+print(commit_list+more)
+")
+              TEXT="## 🚀 Push · yuque-migration-skill\n\n**分支**: ${{ github.ref_name }}\n**提交者**: ${{ github.actor }}\n\n${COMMITS}\n\n[查看详情](${{ github.event.compare }})"
+              ;;
+            pull_request)
+              ACTION="${{ github.event.action }}"
+              if [ "$ACTION" = "opened" ]; then EMOJI="🔵"; elif [ "$ACTION" = "closed" ]; then
+                if [ "${{ github.event.pull_request.merged }}" = "true" ]; then EMOJI="🟣"; else EMOJI="🔴"; fi
+              else EMOJI="🔄"; fi
+              TEXT="## ${EMOJI} PR ${ACTION} · yuque-migration-skill\n\n**${{ github.event.pull_request.title }}**\n\n**提交者**: ${{ github.event.pull_request.user.login }}\n**分支**: ${{ github.event.pull_request.head.ref }} → ${{ github.event.pull_request.base.ref }}\n\n[${{ github.event.pull_request.html_url }}](${{ github.event.pull_request.html_url }})"
+              ;;
+            issues)
+              ACTION="${{ github.event.action }}"
+              if [ "$ACTION" = "opened" ]; then EMOJI="📝"; elif [ "$ACTION" = "closed" ]; then EMOJI="✅"; else EMOJI="🔄"; fi
+              TEXT="## ${EMOJI} Issue ${ACTION} · yuque-migration-skill\n\n**${{ github.event.issue.title }}**\n\n**提交者**: ${{ github.event.issue.user.login }}\n\n[${{ github.event.issue.html_url }}](${{ github.event.issue.html_url }})"
+              ;;
+          esac
 
           curl -s -X POST "$DINGTALK_WEBHOOK" \
             -H "Content-Type: application/json" \
-            -d "$(jq -n --arg msg "$MSG" '{"msgtype":"markdown","markdown":{"title":"GitHub 通知","text":$msg}}')"
+            -d @- <<EOF
+          {
+            "msgtype": "markdown",
+            "markdown": {
+              "title": "yuque-migration-skill · $EVENT",
+              "text": $(echo "$TEXT" | python3 -c "import json,sys; print(json.dumps(sys.stdin.read()))")
+            }
+          }
+          EOF
