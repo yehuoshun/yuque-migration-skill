@@ -16,7 +16,37 @@ jobs:
           DINGTALK_WEBHOOK: ${{ secrets.DINGTALK_WEBHOOK }}
         run: |
           EVENT="${{ github.event_name }}"
-          TEXT="test"
+          case "$EVENT" in
+            push)
+              COMMITS=$(echo '${{ toJson(github.event.commits) }}' | python3 -c "
+import json,sys
+data=json.load(sys.stdin)
+msgs=[]
+for c in data[:5]:
+    msg=c.get('message','').split('\n')[0][:80]
+    author=c.get('author',{}).get('name','unknown')
+    msgs.append(f'- {author}: {msg}')
+commit_list='\n'.join(msgs)
+more=f'\n...等{len(data)}条提交' if len(data)>5 else ''
+print(commit_list+more)
+")
+              TEXT="##  Push * yuque-migration-skill\n**分支**: ${{ github.ref_name }}\n**提交者**: ${{ github.actor }}\n\n${COMMITS}\n\n[查看](${{ github.event.compare }})"
+              ;;
+            pull_request)
+              TEXT="## PR * yuque-migration-skill\n${{ github.event.pull_request.title }}"
+              ;;
+            issues)
+              TEXT="## Issue * yuque-migration-skill\n${{ github.event.issue.title }}"
+              ;;
+          esac
           curl -s -X POST "$DINGTALK_WEBHOOK" \
             -H "Content-Type: application/json" \
-            -d "{\"msgtype\":\"markdown\",\"markdown\":{\"title\":\"test\",\"text\":\"$TEXT\"}}"
+            -d @- <<EOF
+          {
+            "msgtype": "markdown",
+            "markdown": {
+              "title": "yuque-migration-skill - $EVENT",
+              "text": $(echo "$TEXT" | python3 -c "import json,sys; print(json.dumps(sys.stdin.read()))")
+            }
+          }
+          EOF
