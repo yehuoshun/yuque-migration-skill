@@ -12,6 +12,6 @@ jobs:
   notify:
     runs-on: ubuntu-latest
     steps:
-      - uses: yehuoshun/dingtalk-notify@main
+      - uses: yehuoshun/yehuoshun-notify@main
         with:
           webhook: ${{ secrets.DINGTALK_WEBHOOK }}

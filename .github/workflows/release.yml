@@ -28,7 +28,7 @@ jobs:
 
       - name: Notify DingTalk
         if: always()
-        uses: yehuoshun/dingtalk-notify@main
+        uses: yehuoshun/yehuoshun-notify@main
         with:
           webhook: ${{ secrets.DINGTALK_WEBHOOK }}
           event: release
