@@ -12,5 +12,15 @@ jobs:
           DINGTALK_WEBHOOK: ${{ secrets.DINGTALK_WEBHOOK }}
         run: |
           EVENT="${{ github.event_name }}"
-          COMMITS_JSON='${{ toJson(github.event.commits) }}'
-          echo "commits count: $(echo "$COMMITS_JSON" | python3 -c "import json,sys; print(len(json.load(sys.stdin)))")"
+          TEXT="test message"
+          curl -s -X POST "$DINGTALK_WEBHOOK" \
+            -H "Content-Type: application/json" \
+            -d @- <<EOF
+          {
+            "msgtype": "markdown",
+            "markdown": {
+              "title": "test",
+              "text": $(echo "$TEXT" | python3 -c "import json,sys; print(json.dumps(sys.stdin.read()))")
+            }
+          }
+          EOF
