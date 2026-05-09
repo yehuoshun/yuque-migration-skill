@@ -2,10 +2,6 @@ name: DingTalk Notify
 on:
   push:
     branches: ["main", "master"]
-  pull_request:
-    types: [opened, closed, reopened]
-  issues:
-    types: [opened, closed, reopened]
 
 jobs:
   notify:
@@ -13,8 +9,36 @@ jobs:
     steps:
       - name: Send to DingTalk
         env:
-          DINGTALK_WEBHOOK: ${{ secrets.DINGTALK_WEBHOOK }}
+          WEBHOOK: ${{ secrets.DINGTALK_WEBHOOK }}
         run: |
+          MSG=$(cat <<'INNER'
+          {
+            "msgtype": "markdown",
+            "markdown": {
+              "title": "yuque-migration-skill - push",
+              "text": "## 🚀 Push · yuque-migration-skill\n\n"
+            }
+          }
+          INNER
+          )
+
+          # Build commit list (max 5)
           COMMITS_JSON='${{ toJson(github.event.commits) }}'
-          echo "commits: $(echo "$COMMITS_JSON" | python3 -c "import json,sys; print(len(json.load(sys.stdin)))")"
-          echo "event: ${{ github.event_name }}"
+          COMMIT_LIST=$(echo "$COMMITS_JSON" | python3 -c "
+          import json,sys; data=json.load(sys.stdin);
+          lines=['- **'+c['author']['name']+'**: '+c['message'].split(chr(10))[0][:80] for c in data[:5]];
+          extra=chr(10)+'...等'+str(len(data))+'条提交' if len(data)>5 else '';
+          print(chr(10).join(lines)+extra)
+          ")
+
+          TEXT="## 🚀 Push · yuque-migration-skill\n\n"
+          TEXT="${TEXT}**分支**: ${{ github.ref_name }}\n"
+          TEXT="${TEXT}**提交者**: ${{ github.actor }}\n\n"
+          TEXT="${TEXT}${COMMIT_LIST}\n\n"
+          TEXT="${TEXT}[查看变更](${{ github.event.compare }})"
+
+          ESCAPED=$(echo "$TEXT" | python3 -c "import json,sys; print(json.dumps(sys.stdin.read()))")
+
+          curl -s -X POST "$WEBHOOK" \
+            -H "Content-Type: application/json" \
+            -d "{\"msgtype\":\"markdown\",\"markdown\":{\"title\":\"yuque-migration-skill - push\",\"text\":$ESCAPED}}"
