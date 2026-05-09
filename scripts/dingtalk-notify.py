@@ -27,8 +27,8 @@ def push():
     if total > 5:
         commit_text += f"\n> ⋯ 共 **{total}** 条 / *{total} commits*"
 
-    title = f"🚀 Push · {REPO}"
-    text = f"""## 🚀 代码推送 · Code Push  
+    title = f"GitHub Push · {REPO}"
+    text = f"""## 🚀 代码推送 · GitHub  
 
 **仓库** / *Repo*: {REPO}  
 **分支** / *Branch*: {ref}  
@@ -58,8 +58,8 @@ def pull_request():
     base = pr.get("base", {}).get("ref", "?")
     url = pr.get("html_url", "")
 
-    title = f"PR {action} · {REPO}"
-    text = f"""## {label}  
+    title = f"GitHub PR {action} · {REPO}"
+    text = f"""## GitHub {label}  
 
 **{pr.get('title', '?')}**  
 
@@ -83,8 +83,8 @@ def issues():
     user = issue.get("user", {}).get("login", "?")
     url = issue.get("html_url", "")
 
-    title = f"Issue {action} · {REPO}"
-    text = f"""## {label}  
+    title = f"GitHub Issue {action} · {REPO}"
+    text = f"""## GitHub {label}  
 
 **{issue.get('title', '?')}**  
 
@@ -100,8 +100,8 @@ handler = handlers.get(EVENT_NAME)
 if handler:
     title, text = handler()
 else:
-    title = f"📢 {EVENT_NAME} · {REPO}"
-    text = f"## 📢 事件 / Event: `{EVENT_NAME}`"
+    title = f"GitHub {EVENT_NAME} · {REPO}"
+    text = f"## 📢 GitHub 事件 / Event: `{EVENT_NAME}`"
 
 payload = json.dumps({
     "msgtype": "markdown",
