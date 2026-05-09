@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""DingTalk notification for GitHub repo events — 中英双语模板."""
-import json, os, sys, urllib.request
+"""DingTalk notification for GitHub repo events — 中英双语 Markdown 模板."""
+import json, os, urllib.request
 
 WEBHOOK = os.environ["DINGTALK_WEBHOOK"]
 EVENT_NAME = os.environ["GITHUB_EVENT_NAME"]
@@ -22,21 +22,23 @@ def push():
     for c in commits[:5]:
         author = c.get("author", {}).get("name", "?")
         msg = c.get("message", "").split("\n")[0][:80]
-        lines.append(f"  · {msg} — {author}")
+        lines.append(f"> {msg}  — *{author}*")
     commit_text = "\n".join(lines)
     if total > 5:
-        commit_text += f"\n  ··· 共 {total} 条 / {total} commits total"
+        commit_text += f"\n> ⋯ 共 **{total}** 条 / *{total} commits*"
 
-    return f"""🚀 代码推送 · Code Push
+    title = f"🚀 Push · {REPO}"
+    text = f"""## 🚀 代码推送 · Code Push  
 
-仓库 / Repo: {REPO}
-分支 / Branch: {ref}
-提交者 / Author: {actor}
-提交数 / Commits: {total}
+**仓库** / *Repo*: {REPO}  
+**分支** / *Branch*: {ref}  
+**提交者** / *Author*: **{actor}**  
+**提交数** / *Commits*: **{total}**  
 
-{commit_text}
+{commit_text}  
 
-查看变更: {compare}"""
+[📎 查看变更 / View diff]({compare})"""
+    return title, text
 
 
 def pull_request():
@@ -56,14 +58,16 @@ def pull_request():
     base = pr.get("base", {}).get("ref", "?")
     url = pr.get("html_url", "")
 
-    return f"""{label}
+    title = f"PR {action} · {REPO}"
+    text = f"""## {label}  
 
-{pr.get('title', '?')}
+**{pr.get('title', '?')}**  
 
-作者 / Author: {user}
-分支 / Branch: {head} → {base}
+- **作者** / *Author*: **{user}**  
+- **分支** / *Branch*: {head} → {base}  
 
-查看详情: {url}"""
+[📎 查看详情 / View PR]({url})"""
+    return title, text
 
 
 def issues():
@@ -79,28 +83,31 @@ def issues():
     user = issue.get("user", {}).get("login", "?")
     url = issue.get("html_url", "")
 
-    return f"""{label}
+    title = f"Issue {action} · {REPO}"
+    text = f"""## {label}  
 
-{issue.get('title', '?')}
+**{issue.get('title', '?')}**  
 
-作者 / Author: {user}
+- **作者** / *Author*: **{user}**  
 
-查看详情: {url}"""
+[📎 查看详情 / View Issue]({url})"""
+    return title, text
 
 
-handlers = {
-    "push": push,
-    "pull_request": pull_request,
-    "issues": issues,
-}
+handlers = {"push": push, "pull_request": pull_request, "issues": issues}
 
 handler = handlers.get(EVENT_NAME)
 if handler:
-    text = handler()
+    title, text = handler()
 else:
-    text = f"📢 事件: {EVENT_NAME}"
+    title = f"📢 {EVENT_NAME} · {REPO}"
+    text = f"## 📢 事件 / Event: `{EVENT_NAME}`"
 
-payload = json.dumps({"msgtype": "text", "text": {"content": text}}).encode()
+payload = json.dumps({
+    "msgtype": "markdown",
+    "markdown": {"title": title, "text": text},
+}).encode()
+
 req = urllib.request.Request(WEBHOOK, data=payload, headers={"Content-Type": "application/json"})
 resp = urllib.request.urlopen(req)
 print(f"[DingTalk] {resp.status} {resp.read().decode()}")
