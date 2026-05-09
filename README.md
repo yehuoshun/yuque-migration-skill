@@ -50,7 +50,7 @@ git clone https://github.com/yehuoshun/yuque-migration-skill.git
 | 💾 **断点续传** | 进度文件持久化，中断后精确接续 |
 | 🏷️ **格式兼容** | 支持 Markdown 和 Lake 格式（自动转为 Markdown） |
 | 🚦 **限流保护** | 自动检测 Rate Limit，触发限流后保存进度等恢复 |
-| 📊 **容量检查** | 目标库达 5000 篇上限自动暂停，通知用户更换 |
+| 📊 **容量检查** | 目标库达 4800 篇触发切换阈值，自动切下一目标库 |
 
 ---
 
