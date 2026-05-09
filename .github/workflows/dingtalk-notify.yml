@@ -2,6 +2,10 @@ name: DingTalk Notify
 on:
   push:
     branches: ["main", "master"]
+  pull_request:
+    types: [opened, closed, reopened]
+  issues:
+    types: [opened, closed, reopened]
 
 jobs:
   notify:
@@ -12,15 +16,7 @@ jobs:
           DINGTALK_WEBHOOK: ${{ secrets.DINGTALK_WEBHOOK }}
         run: |
           EVENT="${{ github.event_name }}"
-          TEXT="test message"
+          TEXT="test"
           curl -s -X POST "$DINGTALK_WEBHOOK" \
             -H "Content-Type: application/json" \
-            -d @- <<EOF
-          {
-            "msgtype": "markdown",
-            "markdown": {
-              "title": "test",
-              "text": $(echo "$TEXT" | python3 -c "import json,sys; print(json.dumps(sys.stdin.read()))")
-            }
-          }
-          EOF
+            -d "{\"msgtype\":\"markdown\",\"markdown\":{\"title\":\"test\",\"text\":\"$TEXT\"}}"
