@@ -11,9 +11,8 @@ jobs:
         env:
           DINGTALK_WEBHOOK: ${{ secrets.DINGTALK_WEBHOOK }}
         run: |
-          echo '${{ toJson(github.event.commits) }}' | python3 -c "
-import json,sys
-data=json.load(sys.stdin)
-print(len(data))
+          python3 -c "
+print('hello')
+print('world')
 "
           echo "done"
