@@ -10,7 +10,8 @@ REPO = os.environ.get("GITHUB_REPOSITORY", "?")
 with open(EVENT_PATH) as f:
     ev = json.load(f)
 
-# ── commit type → emoji ──────────────────────────────────
+# ── helpers ──────────────────────────────────────────────
+
 COMMIT_EMOJI = {
     "feat": "✨", "fix": "🐛", "docs": "📝", "style": "💄",
     "refactor": "♻️", "test": "✅", "chore": "🔧", "perf": "⚡",
@@ -18,22 +19,17 @@ COMMIT_EMOJI = {
     "wip": "🚧",
 }
 
-
-def _commit_emoji(msg):
+def _emoji(msg):
     m = re.match(r"(\w+)[(:]", msg)
     return COMMIT_EMOJI.get((m.group(1) if m else "").lower(), "•")
 
-
 def _truncate(text, n=300):
-    if not text:
-        return ""
+    if not text: return ""
     text = text.strip()
-    if len(text) <= n:
-        return text
-    return text[:n].rsplit("\n", 1)[0] + "\n> ⋯"
+    return text if len(text) <= n else text[:n].rsplit("\n", 1)[0] + "\n> ⋯"
 
 
-# ── Notification builders ────────────────────────────────
+# ── builders ─────────────────────────────────────────────
 
 def push():
     ref = os.environ["GITHUB_REF_NAME"]
@@ -41,34 +37,32 @@ def push():
     compare = ev.get("compare", "")
     commits = ev.get("commits", [])
     total = len(commits)
-    is_tag = ref.startswith("v") or "tag" in ref.lower()
-
-    if is_tag:
-        icon = "🏷️" if ref[0].isdigit() or ref.lower().startswith("v") else "🔖"
-        title = f"GitHub Release · {REPO}"
-        header = f"## {icon} GitHub · 发布 / Release\n\n**{ref}** 由 / by **{actor}**\n"
-    else:
-        title = f"GitHub Push · {REPO}"
-        header = f"## 🚀 GitHub · 代码推送 / Push\n\n**{actor}** 推送到 / pushed to `{ref}` — **{total}** 次提交 / commits\n"
 
     lines = []
     seen = set()
-    for c in commits[:8]:
-        msg = c.get("message", "").split("\n")[0][:120]
+    for c in commits[:5]:
+        msg = c.get("message", "").split("\n")[0][:80]
         author = c.get("author", {}).get("name", "?")
-        emoji = _commit_emoji(msg)
         key = f"{msg}|{author}"
-        if key in seen:
-            continue
+        if key in seen: continue
         seen.add(key)
-        lines.append(f"{emoji} {msg}  — *{author}*")
+        lines.append(f"> {_emoji(msg)} {msg}  — *{author}*")
 
-    if total > 8:
-        lines.append(f"⋯ 共 **{total}** 条 / *{total} commits*")
+    commit_text = "\n".join(lines)
+    if total > 5:
+        commit_text += f"\n> ⋯ 共 **{total}** 条 / *{total} commits*"
 
-    text = header + "\n".join(f"> {l}" for l in lines)
-    if compare:
-        text += f"\n\n[🔍 查看变更 / View changes]({compare})"
+    title = f"Push · {REPO}"
+    text = f"""## 🚀 代码推送 · Code Push  
+
+**仓库** / *Repo*: {REPO}  
+**分支** / *Branch*: {ref}  
+**提交者** / *Author*: **{actor}**  
+**提交数** / *Commits*: **{total}**  
+
+{commit_text}  
+
+[📎 查看变更 / View diff]({compare})"""
     return title, text
 
 
@@ -77,15 +71,13 @@ def pull_request():
     action = ev.get("action", "?")
     number = pr.get("number", "?")
 
-    action_map = {
-        "opened":   ("🟢", "新建 / Opened"),
-        "closed":   ("🔴", "关闭 / Closed"),
-        "reopened": ("🔄", "重新打开 / Reopened"),
-    }
-    icon, label = action_map.get(action, ("📌", action.capitalize()))
-
+    action_label = {
+        "opened":   "🟢 新建 / Opened",
+        "closed":   "🔴 关闭 / Closed",
+        "reopened": "🔄 重新打开 / Reopened",
+    }.get(action, f"📌 {action}")
     if action == "closed" and pr.get("merged"):
-        icon, label = "🟣", "已合并 / Merged"
+        action_label = "🟣 已合并 / Merged"
 
     user = pr.get("user", {}).get("login", "?")
     head = pr.get("head", {}).get("ref", "?")
@@ -95,19 +87,19 @@ def pull_request():
     labels_list = [l["name"] for l in (pr.get("labels") or [])]
     label_str = " · ".join(f"`{l}`" for l in labels_list) if labels_list else "—"
 
-    title = f"GitHub PR {label.split(' / ')[1]} · {REPO}"
-    text = f"""## {icon} GitHub · PR #{number} {label}
+    title = f"PR {action} · {REPO}"
+    text = f"""## {action_label}  
 
-**[{pr.get('title', '?')}]({url})**
+**{pr.get('title', '?')}**  
 
-> 👤 作者 / Author: **{user}**
-> 🌿 分支 / Branch: `{head}` → `{base}`
-> 🏷️ 标签 / Labels: {label_str}"""
+- **作者** / *Author*: **{user}**  
+- **分支** / *Branch*: {head} → {base}  
+- **标签** / *Labels*: {label_str}"""
 
     if body:
         text += f"\n\n{body}"
 
-    text += f"\n\n[🔍 查看详情 / View PR]({url})"
+    text += f"\n\n[📎 查看详情 / View PR]({url})"
     return title, text
 
 
@@ -116,12 +108,11 @@ def issues():
     action = ev.get("action", "?")
     number = issue.get("number", "?")
 
-    action_map = {
-        "opened":   ("📝", "新建 / Opened"),
-        "closed":   ("✅", "关闭 / Closed"),
-        "reopened": ("🔄", "重新打开 / Reopened"),
-    }
-    icon, label = action_map.get(action, ("📌", action.capitalize()))
+    action_label = {
+        "opened":   "📝 新建 / Opened",
+        "closed":   "✅ 关闭 / Closed",
+        "reopened": "🔄 重新打开 / Reopened",
+    }.get(action, f"📌 {action}")
 
     user = issue.get("user", {}).get("login", "?")
     url = issue.get("html_url", "")
@@ -129,31 +120,30 @@ def issues():
     labels_list = [l["name"] for l in (issue.get("labels") or [])]
     label_str = " · ".join(f"`{l}`" for l in labels_list) if labels_list else "—"
 
-    title = f"GitHub Issue {label.split(' / ')[1]} · {REPO}"
-    text = f"""## {icon} GitHub · Issue #{number} {label}
+    title = f"Issue {action} · {REPO}"
+    text = f"""## {action_label}  
 
-**[{issue.get('title', '?')}]({url})**
+**{issue.get('title', '?')}**  
 
-> 👤 作者 / Author: **{user}**
-> 🏷️ 标签 / Labels: {label_str}"""
+- **作者** / *Author*: **{user}**  
+- **标签** / *Labels*: {label_str}"""
 
     if body:
         text += f"\n\n{body}"
 
-    text += f"\n\n[🔍 查看详情 / View Issue]({url})"
+    text += f"\n\n[📎 查看详情 / View Issue]({url})"
     return title, text
 
 
-# ── Dispatch ─────────────────────────────────────────────
+# ── dispatch ─────────────────────────────────────────────
 
 handlers = {"push": push, "pull_request": pull_request, "issues": issues}
-
 handler = handlers.get(EVENT_NAME)
 if handler:
     title, text = handler()
 else:
-    title = f"GitHub {EVENT_NAME} · {REPO}"
-    text = f"## 📢 GitHub · 事件 / Event: `{EVENT_NAME}`\n\n_{REPO}_"
+    title = f"{EVENT_NAME} · {REPO}"
+    text = f"## 📢 事件 / Event: `{EVENT_NAME}`\n\n_{REPO}_"
 
 payload = json.dumps({
     "msgtype": "markdown",
