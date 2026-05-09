@@ -12,11 +12,5 @@ jobs:
           DINGTALK_WEBHOOK: ${{ secrets.DINGTALK_WEBHOOK }}
         run: |
           EVENT="${{ github.event_name }}"
-          case "$EVENT" in
-            push)
-              TEXT="##  Push · yuque-migration-skill\n分支: ${{ github.ref_name }}\n提交者: ${{ github.actor }}"
-              ;;
-          esac
-          curl -s -X POST "$DINGTALK_WEBHOOK" \
-            -H "Content-Type: application/json" \
-            -d "{\"msgtype\":\"markdown\",\"markdown\":{\"title\":\"test\",\"text\":\"$TEXT\"}}"
+          COMMITS_JSON='${{ toJson(github.event.commits) }}'
+          echo "commits count: $(echo "$COMMITS_JSON" | python3 -c "import json,sys; print(len(json.load(sys.stdin)))")"
