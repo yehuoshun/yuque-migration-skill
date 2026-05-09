@@ -1,0 +1,32 @@
+name: 钉钉推送
+on:
+  push:
+    branches: [main]
+  pull_request:
+    types: [opened, closed]
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 推送到钉钉
+        env:
+          DINGTALK_WEBHOOK: ${{ secrets.DINGTALK_WEBHOOK }}
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            MSG="🐙 ${{ github.actor }} pushed to **${{ github.ref_name }}**
+          > ${{ github.event.head_commit.message }}
+
+          📦 ${{ github.repository }}
+          🔗 [${{ github.event.compare }}](${{ github.event.compare }})"
+          else
+            MSG="🐙 ${{ github.actor }} ${{ github.event.action }} PR on **${{ github.ref_name }}**
+          > ${{ github.event.pull_request.title }}
+
+          📦 ${{ github.repository }}
+          🔗 [${{ github.event.pull_request.html_url }}](${{ github.event.pull_request.html_url }})"
+          fi
+
+          curl -s -X POST "$DINGTALK_WEBHOOK" \
+            -H "Content-Type: application/json" \
+            -d "$(jq -n --arg msg "$MSG" '{"msgtype":"markdown","markdown":{"title":"GitHub 通知","text":$msg}}')"
