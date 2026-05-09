@@ -31,4 +31,4 @@ jobs:
         env:
           DINGTALK_WEBHOOK: ${{ secrets.DINGTALK_WEBHOOK }}
           COMMIT_MSG: ${{ github.event.head_commit.message }}
-        run: python3 scripts/release-notify.py
+        run: python3 .github/workflows/scripts/release-notify.py
