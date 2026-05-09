@@ -118,7 +118,7 @@ GET /repos/{book_id}/docs?offset={N}&limit=100
 1. `GET /repos/{book_id}/docs/{doc_id}?raw=1` 读取原文
 2. 空文档跳过。先 `GET /repos/{book_id}/docs/{doc_id}?raw=1` 读取原文，取 `format` 字段：
    - **markdown** → 正常走清洗流程
-   - **lake** → 不跳过，直接取 `body` 字段（已是 markdown 链接文本）作为文档内容创建到目标库，不做格式清洗。标题保持不变，有附件链接原样保留。标记原因「lake 格式已转为 markdown」
+   - **lake** → 不跳过，取 `body_lake` 字段（原生格式）作为文档内容，用 `format: "lake"` 创建到目标库。不做格式清洗、不去重（lake 格式无法比对文本）。标题保持不变，有附件链接原样保留。标记原因「lake 格式无损搬运」
    - **其他未知格式** → 记入 `failed`，标记原因「未知格式: {format}」
    - 空 body（去除空白后为空）→ 记入 `skipped_empty`，跳过
 3. **二进制检测**：内容采样前 200 字符，若非 ASCII + 控制字符比例 > 25% 则判定为二进制文件 → 跳过（不记入 failed，直接跳过）
@@ -236,7 +236,7 @@ current_count = initial_count + 本地已成功创建到当前目标库的文档
    ├─ 跳过: D 篇（去重）E 篇（空文档）F 篇（二进制文件）
    ├─ 大文档: W 篇（已拆分）
    ├─ 含附件文档: V 篇（清单，附件无法迁移，请手动处理）
-   ├─ Lake 转换: L 篇（lake 格式已转为 markdown）
+   ├─ Lake 无损搬运: L 篇（lake 格式原样搬运，原生表格/样式完整保留）
    ├─ 失败: U 篇（清单，列出原因）
    ├─ 孤儿文档: P 篇（已创建但未挂目录，需手动处理）
    ├─ 目标库用量:
