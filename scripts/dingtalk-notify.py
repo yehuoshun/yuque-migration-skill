@@ -62,7 +62,9 @@ def push():
 
 {commit_text}  
 
-[📎 查看变更 / View diff]({compare})"""
+[📎 查看变更 / View diff]({compare})  
+
+> GitHub"""
     return title, text
 
 
@@ -99,7 +101,7 @@ def pull_request():
     if body:
         text += f"\n\n{body}"
 
-    text += f"\n\n[📎 查看详情 / View PR]({url})"
+    text += f"\n\n[📎 查看详情 / View PR]({url})  \n\n> GitHub"
     return title, text
 
 
@@ -131,7 +133,7 @@ def issues():
     if body:
         text += f"\n\n{body}"
 
-    text += f"\n\n[📎 查看详情 / View Issue]({url})"
+    text += f"\n\n[📎 查看详情 / View Issue]({url})  \n\n> GitHub"
     return title, text
 
 
@@ -143,7 +145,7 @@ if handler:
     title, text = handler()
 else:
     title = f"{EVENT_NAME} · {REPO}"
-    text = f"## 📢 事件 / Event: `{EVENT_NAME}`\n\n_{REPO}_"
+    text = f"## 📢 事件 / Event: `{EVENT_NAME}`\n\n_{REPO}_\n\n> GitHub"
 
 payload = json.dumps({
     "msgtype": "markdown",
