@@ -2,6 +2,10 @@ name: DingTalk Notify
 on:
   push:
     branches: ["main", "master"]
+  pull_request:
+    types: [opened, closed, reopened]
+  issues:
+    types: [opened, closed, reopened]
 
 jobs:
   notify:
@@ -9,36 +13,18 @@ jobs:
     steps:
       - name: Send to DingTalk
         env:
-          WEBHOOK: ${{ secrets.DINGTALK_WEBHOOK }}
+          DINGTALK_WEBHOOK: ${{ secrets.DINGTALK_WEBHOOK }}
         run: |
-          MSG=$(cat <<'INNER'
-          {
-            "msgtype": "markdown",
-            "markdown": {
-              "title": "yuque-migration-skill - push",
-              "text": "## 🚀 Push · yuque-migration-skill\n\n"
-            }
-          }
-          INNER
-          )
-
-          # Build commit list (max 5)
-          COMMITS_JSON='${{ toJson(github.event.commits) }}'
-          COMMIT_LIST=$(echo "$COMMITS_JSON" | python3 -c "
-          import json,sys; data=json.load(sys.stdin);
-          lines=['- **'+c['author']['name']+'**: '+c['message'].split(chr(10))[0][:80] for c in data[:5]];
-          extra=chr(10)+'...等'+str(len(data))+'条提交' if len(data)>5 else '';
-          print(chr(10).join(lines)+extra)
-          ")
-
-          TEXT="## 🚀 Push · yuque-migration-skill\n\n"
-          TEXT="${TEXT}**分支**: ${{ github.ref_name }}\n"
-          TEXT="${TEXT}**提交者**: ${{ github.actor }}\n\n"
-          TEXT="${TEXT}${COMMIT_LIST}\n\n"
-          TEXT="${TEXT}[查看变更](${{ github.event.compare }})"
-
-          ESCAPED=$(echo "$TEXT" | python3 -c "import json,sys; print(json.dumps(sys.stdin.read()))")
-
-          curl -s -X POST "$WEBHOOK" \
-            -H "Content-Type: application/json" \
-            -d "{\"msgtype\":\"markdown\",\"markdown\":{\"title\":\"yuque-migration-skill - push\",\"text\":$ESCAPED}}"
+          COMMITS=$(echo '${{ toJson(github.event.commits) }}' | python3 -c "
+import json,sys
+data=json.load(sys.stdin)
+msgs=[]
+for c in data[:5]:
+    msg=c.get('message','').split('\n')[0][:80]
+    author=c.get('author',{}).get('name','unknown')
+    msgs.append(f'- {author}: {msg}')
+commit_list='\n'.join(msgs)
+more=f'\n...等{len(data)}条提交' if len(data)>5 else ''
+print(commit_list+more)
+")
+          echo "done"
