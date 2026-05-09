@@ -15,20 +15,6 @@ jobs:
         env:
           DINGTALK_WEBHOOK: ${{ secrets.DINGTALK_WEBHOOK }}
         run: |
-          COMMITS=$(echo '${{ toJson(github.event.commits) }}' | python3 -c "
-import json,sys
-data=json.load(sys.stdin)
-msgs=[]
-for c in data[:5]:
-    msg=c.get('message','').split('\n')[0][:80]
-    author=c.get('author',{}).get('name','unknown')
-    msgs.append(f'- {author}: {msg}')
-commit_list='\n'.join(msgs)
-more=f'\n...等{len(data)}条提交' if len(data)>5 else ''
-print(commit_list+more)
-")
-          TEXT="##  Push * yuque-migration-skill\n分支: ${{ github.ref_name }}\n提交者: ${{ github.actor }}\n\n${COMMITS}"
-          TEXT_JSON=$(echo "$TEXT" | python3 -c "import json,sys; print(json.dumps(sys.stdin.read()))")
-          curl -s -X POST "$DINGTALK_WEBHOOK" \
-            -H "Content-Type: application/json" \
-            -d "{\"msgtype\":\"markdown\",\"markdown\":{\"title\":\"test\",\"text\":$TEXT_JSON}}"
+          COMMITS_JSON='${{ toJson(github.event.commits) }}'
+          echo "commits: $(echo "$COMMITS_JSON" | python3 -c "import json,sys; print(len(json.load(sys.stdin)))")"
+          echo "event: ${{ github.event_name }}"
