@@ -10,11 +10,15 @@
 
 ## 安装
 
+### 方式一：下载 SKILL.md（推荐）
+
+从 [Releases](https://github.com/yehuoshun/yuque-migration-skill/releases/latest) 下载 `SKILL.md`，放入 OpenClaw 的 `skills/` 目录即可。
+
+### 方式二：Git Clone
+
 ```bash
 git clone https://github.com/yehuoshun/yuque-migration-skill.git
 ```
-
-或通过 OpenClaw 直接安装本仓库。
 
 ## 前置条件
 
