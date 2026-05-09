@@ -11,7 +11,12 @@ jobs:
         env:
           DINGTALK_WEBHOOK: ${{ secrets.DINGTALK_WEBHOOK }}
         run: |
-          echo "step 1: env check"
-          echo "webhook length: ${#DINGTALK_WEBHOOK}"
           EVENT="${{ github.event_name }}"
-          echo "event: $EVENT"
+          case "$EVENT" in
+            push)
+              TEXT="##  Push · yuque-migration-skill\n分支: ${{ github.ref_name }}\n提交者: ${{ github.actor }}"
+              ;;
+          esac
+          curl -s -X POST "$DINGTALK_WEBHOOK" \
+            -H "Content-Type: application/json" \
+            -d "{\"msgtype\":\"markdown\",\"markdown\":{\"title\":\"test\",\"text\":\"$TEXT\"}}"
