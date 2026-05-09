@@ -7,7 +7,10 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - name: Test env
+      - name: Send to DingTalk
         env:
-          FOO: ${{ secrets.DINGTALK_WEBHOOK }}
-        run: echo "env set, length=${#FOO}"
+          DINGTALK_WEBHOOK: ${{ secrets.DINGTALK_WEBHOOK }}
+        run: |
+          curl -s -X POST "$DINGTALK_WEBHOOK" \
+            -H "Content-Type: application/json" \
+            -d '{"msgtype":"markdown","markdown":{"title":"test","text":"hello"}}'
