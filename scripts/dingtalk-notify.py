@@ -22,79 +22,70 @@ def push():
     for c in commits[:5]:
         author = c.get("author", {}).get("name", "?")
         msg = c.get("message", "").split("\n")[0][:80]
-        lines.append(f"> {msg}  — *{author}*")
+        lines.append(f"  · {msg} — {author}")
     commit_text = "\n".join(lines)
     if total > 5:
-        commit_text += f"\n> ⋯ 共 **{total}** 条提交 / *{total} commits total*"
+        commit_text += f"\n  ··· 共 {total} 条 / {total} commits total"
 
-    title = f"[{REPO}] Push · {ref}"
-    return f"""## 🚀 代码推送 · Code Push
+    return f"""🚀 代码推送 · Code Push
 
-**仓库** / *Repo*: `{REPO}`
-**分支** / *Branch*: `{ref}`
-**提交者** / *Author*: **{actor}**
-**提交数** / *Commits*: **{total}**
+仓库 / Repo: {REPO}
+分支 / Branch: {ref}
+提交者 / Author: {actor}
+提交数 / Commits: {total}
 
 {commit_text}
 
-[📎 查看变更 / View diff]({compare})""", title
+查看变更: {compare}"""
 
 
 def pull_request():
     pr = ev.get("pull_request", {})
     action = ev.get("action", "?")
     labels = {
-        "opened":   ("🟢", "新建 / Opened"),
-        "closed":   ("🔴", "关闭 / Closed"),
-        "reopened": ("🔄", "重新打开 / Reopened"),
+        "opened":   "🟢 新建 / Opened",
+        "closed":   "🔴 关闭 / Closed",
+        "reopened": "🔄 重新打开 / Reopened",
     }
-    emoji, label = labels.get(action, ("📌", action))
+    label = labels.get(action, f"📌 {action}")
     if action == "closed" and pr.get("merged"):
-        emoji, label = "🟣", "已合并 / Merged"
+        label = "🟣 已合并 / Merged"
 
     user = pr.get("user", {}).get("login", "?")
     head = pr.get("head", {}).get("ref", "?")
     base = pr.get("base", {}).get("ref", "?")
     url = pr.get("html_url", "")
 
-    title = f"[{REPO}] PR {action}"
-    return f"""## {emoji} Pull Request · {label}
+    return f"""{label}
 
-**{pr.get('title', '?')}**
+{pr.get('title', '?')}
 
-| | |
-|---|---|
-| **作者** / *Author* | **{user}** |
-| **分支** / *Branch* | `{head}` → `{base}` |
-| **状态** / *Status* | {label} |
+作者 / Author: {user}
+分支 / Branch: {head} → {base}
 
-[📎 查看详情 / View PR]({url})""", title
+查看详情: {url}"""
 
 
 def issues():
     issue = ev.get("issue", {})
     action = ev.get("action", "?")
     labels = {
-        "opened":   ("📝", "新建 / Opened"),
-        "closed":   ("✅", "关闭 / Closed"),
-        "reopened": ("🔄", "重新打开 / Reopened"),
+        "opened":   "📝 新建 / Opened",
+        "closed":   "✅ 关闭 / Closed",
+        "reopened": "🔄 重新打开 / Reopened",
     }
-    emoji, label = labels.get(action, ("📌", action))
+    label = labels.get(action, f"📌 {action}")
 
     user = issue.get("user", {}).get("login", "?")
     url = issue.get("html_url", "")
 
-    title = f"[{REPO}] Issue {action}"
-    return f"""## {emoji} Issue · {label}
+    return f"""{label}
 
-**{issue.get('title', '?')}**
+{issue.get('title', '?')}
 
-| | |
-|---|---|
-| **作者** / *Author* | **{user}** |
-| **状态** / *Status* | {label} |
+作者 / Author: {user}
 
-[📎 查看详情 / View Issue]({url})""", title
+查看详情: {url}"""
 
 
 handlers = {
@@ -105,12 +96,11 @@ handlers = {
 
 handler = handlers.get(EVENT_NAME)
 if handler:
-    text, title = handler()
+    text = handler()
 else:
-    title = f"[{REPO}] {EVENT_NAME}"
-    text = f"📢 事件 / Event: `{EVENT_NAME}`"
+    text = f"📢 事件: {EVENT_NAME}"
 
-payload = json.dumps({"msgtype": "markdown", "markdown": {"title": title, "text": text}}).encode()
+payload = json.dumps({"msgtype": "text", "text": {"content": text}}).encode()
 req = urllib.request.Request(WEBHOOK, data=payload, headers={"Content-Type": "application/json"})
 resp = urllib.request.urlopen(req)
 print(f"[DingTalk] {resp.status} {resp.read().decode()}")
