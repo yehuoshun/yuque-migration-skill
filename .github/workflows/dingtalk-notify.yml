@@ -1,5 +1,4 @@
 name: DingTalk Notify
-
 on:
   push:
     branches: ["main", "master"]
@@ -12,42 +11,11 @@ jobs:
   notify:
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
       - name: Send to DingTalk
         env:
           DINGTALK_WEBHOOK: ${{ secrets.DINGTALK_WEBHOOK }}
-        run: |
-          EVENT="${{ github.event_name }}"
-
-          case "$EVENT" in
-            push)
-              COMMITS=$(echo '${{ toJson(github.event.commits) }}' | python3 -c "import json,sys; data=json.load(sys.stdin); msgs=[f'- {c.get(\"author\",{}).get(\"name\",\"?\"):} {c.get(\"message\",\"\").split(chr(10))[0][:80]}' for c in data[:5]]; more=f'\n...共{len(data)}条提交' if len(data)>5 else ''; print('\n'.join(msgs)+more)")
-              TEXT="## 🚀 Push · yuque-migration-skill\n\n**分支**: ${{ github.ref_name }}\n**提交者**: ${{ github.actor }}\n\n${COMMITS}\n\n[查看详情](${{ github.event.compare }})"
-              ;;
-            pull_request)
-              ACTION="${{ github.event.action }}"
-              if [ "$ACTION" = "opened" ]; then EMOJI="🔵"
-              elif [ "$ACTION" = "closed" ]; then
-                if [ "${{ github.event.pull_request.merged }}" = "true" ]; then EMOJI="🟣"; else EMOJI="🔴"; fi
-              else EMOJI="🔄"; fi
-              TEXT="## ${EMOJI} PR ${ACTION} · yuque-migration-skill\n\n**${{ github.event.pull_request.title }}**\n\n**提交者**: ${{ github.event.pull_request.user.login }}\n**分支**: ${{ github.event.pull_request.head.ref }} → ${{ github.event.pull_request.base.ref }}\n\n[${{ github.event.pull_request.html_url }}](${{ github.event.pull_request.html_url }})"
-              ;;
-            issues)
-              ACTION="${{ github.event.action }}"
-              if [ "$ACTION" = "opened" ]; then EMOJI="📝"
-              elif [ "$ACTION" = "closed" ]; then EMOJI="✅"
-              else EMOJI="🔄"; fi
-              TEXT="## ${EMOJI} Issue ${ACTION} · yuque-migration-skill\n\n**${{ github.event.issue.title }}**\n\n**提交者**: ${{ github.event.issue.user.login }}\n\n[${{ github.event.issue.html_url }}](${{ github.event.issue.html_url }})"
-              ;;
-          esac
-
-          curl -s -X POST "$DINGTALK_WEBHOOK" \
-            -H "Content-Type: application/json" \
-            -d @- <<EOF
-          {
-            "msgtype": "markdown",
-            "markdown": {
-              "title": "yuque-migration-skill · $EVENT",
-              "text": $(echo "$TEXT" | python3 -c "import json,sys; print(json.dumps(sys.stdin.read()))")
-            }
-          }
-          EOF
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+          GITHUB_ACTOR: ${{ github.actor }}
+        run: python3 scripts/dingtalk-notify.py
