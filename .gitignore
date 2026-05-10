@@ -1,2 +1,4 @@
-scripts/migrate.log
 __pycache__/
+*.log
+*.tmp
+progress/

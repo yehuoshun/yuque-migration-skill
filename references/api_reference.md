@@ -7,14 +7,6 @@
 >
 > ⚠️ **必须设置 timeout**：`urlopen(req, timeout=30)`，避免网络异常时请求无限挂起。超时后按错误处理规范重试。
 >
-> 📦 **通用封装参考**：[api_helper.py](api_helper.py) 提供了请求封装、429 重试、速率检查、并行批量等常用模式，可直接命令行调用或复制函数到执行脚本中。
->
-> ```bash
-> # 命令行直接调用
-> python3 api_helper.py <config.json> get /user
-> python3 api_helper.py <config.json> post /repos/123/docs '{"title":"test"}'
-> ```
->
 > **Python 示例**：
 > ```python
 > import urllib.request, json

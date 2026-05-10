@@ -182,19 +182,57 @@ def fix_table_format(body):
     return body
 
 def needs_llm_cleaning(body):
+    """判断是否需要 LLM 清洗。
+    跳过：纯代码文档、附件文档、<500 字符短文档。
+    """
     stripped = body.strip()
-    if stripped.startswith('INSERT INTO') or stripped.startswith('```c\nINSERT INTO'): return False
-    if stripped.startswith('```c\n[') or stripped.startswith('['): return False
+    if not stripped:
+        return False
+
+    # ── 纯代码文档检测 ──
+    # 代码块包裹且内容是源代码特征
     code_wrapped = re.match(r'^```\w*\n', stripped)
     if code_wrapped:
-        inner = re.sub(r'^```\w*\n|```$', '', stripped, flags=re.DOTALL)
-        if inner.strip().startswith(('INSERT', 'SELECT', 'CREATE', 'ALTER', 'DROP', '[', '{',
-                                      '#include', 'import ', 'package ', '<?php', '<!DOCTYPE')):
+        inner = re.sub(r'^```\w*\n|```$', '', stripped, flags=re.DOTALL).strip()
+        code_indicators = (
+            'INSERT INTO', 'SELECT ', 'CREATE TABLE', 'ALTER TABLE', 'DROP ',
+            '#include', '#define', '#ifndef', '#pragma',
+            'import ', 'from ', 'package ', 'func ', 'fn ', 'def ',
+            '<?php', '<!DOCTYPE', '<html', '<template',
+            '#!/', 'use ', 'module ', 'require(',
+        )
+        if inner.startswith(code_indicators):
             return False
+        # 全代码块且没有自然语言段落
+        non_code = re.sub(r'```[\s\S]*?```', '', stripped, flags=re.DOTALL).strip()
+        if len(non_code) < len(stripped) * 0.1:  # 代码占比 > 90%
+            return False
+
+    # ── 纯代码文档检测（无代码块包裹） ──
+    if stripped.startswith(code_indicators):
+        return False
+    # JSON/XML/YAML 全量结构数据
+    if re.match(r'^[\[{]\s*$', stripped.split('\n')[0].strip()):
+        non_struct = re.sub(r'[\[\]{}:,"\'.\d\s\-]', '', stripped[:500])
+        if len(non_struct) < 20:  # 几乎没有自然语言
+            return False
+
+    # ── 附件文档检测 ──
+    # 内容主要是文件链接/下载地址，缺少实质正文
+    link_lines = re.findall(r'https?://[^\s<>"\']+\.(?:pdf|zip|rar|7z|tar\.gz|docx?|xlsx?|pptx?|apk|exe|dmg|pkg|jar|war|deb|rpm)',
+                            stripped, re.IGNORECASE)
+    if link_lines:
+        # 去链接后的有效正文
+        no_links = re.sub(r'https?://[^\s<>"\'\n]+', '', stripped)
+        no_links = re.sub(r'[\[\]\(\)\|\-\*#\s]', '', no_links)
+        if len(no_links) < 100:  # 去掉链接后几乎没有实质内容
+            return False
+
     return True
 
-def llm_clean_and_classify(body, title, timeout=90):
+def llm_clean_and_classify(body, title, timeout=120):
     """LLM清洗 + 分类合并调用
+    单次喂入上限 20000 字符，由 LLM 判断截断点。
     返回: (cleaned_body, categories)
     categories: ["分类1", "分类2/子分类", ...]
     """
@@ -204,9 +242,16 @@ def llm_clean_and_classify(body, title, timeout=90):
         # 不调 LLM，默认未分类
         return body, ["未分类"]
 
-    prompt = """你是语雀文档格式清洗 + 分类助手。
+    # ── 长文档截断：>20000 字符截取前 20000 送入 LLM ──
+    MAX_CHARS = 20000
+    truncated = False
+    if len(body) > MAX_CHARS:
+        body = body[:MAX_CHARS]
+        truncated = True
 
-输入：一篇从语雀导出的 Markdown 文档。
+    prompt = f"""你是语雀文档格式清洗 + 分类助手。
+
+输入：一篇从语雀导出的 Markdown 文档{"（已截取前 " + str(MAX_CHARS) + " 字符）" if truncated else ""}。
 
 ## 清洗要求
 1. 删除：广告横幅、纯表情/灌水评论、HTML 注释、废弃的 HTML 标签
@@ -221,6 +266,8 @@ def llm_clean_and_classify(body, title, timeout=90):
 - 表格分隔行列数必须与表头一致
 - 表格单元格内的竖线必须转义
 - 表格中不要使用 HTML 标签
+
+{"## 截断要求\n文档原文超过 " + str(MAX_CHARS) + " 字符，已截取前 " + str(MAX_CHARS) + " 字符发送。\n请在截断处附近选择一个完整的段落/章节边界作为结束点，输出到该边界为止的清洗后内容。\n如果截断点正好在代码块内部，请输出到该代码块结束后再停止。" if truncated else ""}
 
 ## 分类要求
 阅读文档全文，判断它属于哪些主题分类（可多选）。
@@ -271,71 +318,6 @@ def llm_clean_and_classify(body, title, timeout=90):
         print(f"  ⚠️ LLM异常: {e}，使用原始内容")
         return body, ["未分类"]
 
-
-def split_large(body, max_len=50000):
-    """大文档拆分，优先按标题切"""
-    if len(body) <= max_len:
-        return [body]
-
-    lines = body.split('\n')
-    in_code = False
-    non_code_len = 0
-    for line in lines:
-        if line.strip().startswith('```'):
-            in_code = not in_code
-            continue
-        if not in_code:
-            non_code_len += len(line)
-    if non_code_len <= max_len:
-        return [body]
-
-    sections = []
-    current = ""
-    in_code = False
-    for line in lines:
-        stripped = line.strip()
-        if stripped.startswith('```'):
-            in_code = not in_code
-        if not in_code and (stripped.startswith('## ') or stripped.startswith('### ')):
-            if current:
-                sections.append(current.rstrip('\n'))
-            current = line + '\n'
-        else:
-            current += line + '\n'
-    if current.strip():
-        sections.append(current.rstrip('\n'))
-
-    if len(sections) <= 1:
-        sections = re.split(r'\n\n+', body)
-
-    parts = []
-    current = ""
-    for sec in sections:
-        if len(current) + len(sec) > max_len and current:
-            parts.append(current.strip())
-            current = sec
-        else:
-            current += "\n" + sec if current else sec
-    if current.strip():
-        parts.append(current.strip())
-
-    if len(parts) == 1 and len(parts[0]) > max_len:
-        hard_parts = []
-        hard_current = []
-        hard_len = 0
-        for line in parts[0].split('\n'):
-            if hard_len + len(line) > max_len and hard_current:
-                hard_parts.append('\n'.join(hard_current))
-                hard_current = [line]
-                hard_len = len(line)
-            else:
-                hard_current.append(line)
-                hard_len += len(line) + 1
-        if hard_current:
-            hard_parts.append('\n'.join(hard_current))
-        return hard_parts if len(hard_parts) > 1 else parts
-
-    return parts if len(parts) > 1 else [body]
 
 
 # ==================== 目录管理 ====================
@@ -479,16 +461,14 @@ def mount_docs_to_categories(p, doc_ids, part_bodies, categories):
 
 # ==================== 核心处理 ====================
 
-def process_doc(doc, p):
-    """处理单篇文档：读取→清洗+分类→拆分→创建→挂目录"""
+def _process_body(doc, p, result, status, headers):
+    """处理已获取的文档 body（核心逻辑，供 process_doc 和 process_doc_with_body 共用）"""
     global TARGET_ID, SOURCE_ID
     doc_id = doc["id"]
     orig_title = doc["title"]
     title = fix_title(orig_title)
 
-    # 获取文档内容
-    result, status, headers = api_get(
-        f"/repos/{SOURCE_ID}/docs/{doc_id}", {"raw": "1"}, timeout=90)
+    # ── 获取失败处理 ──
     if result is None:
         if status == 404:
             p.setdefault("skipped_empty", []).append({"doc_id": doc_id, "title": title})
@@ -563,52 +543,44 @@ def process_doc(doc, p):
         p["skipped"] = p.get("skipped", 0) + 1
         return "binary"
 
-    # ── LLM 清洗 + 分类（一次调用） ──
+    # ── LLM 清洗 + 分类（一次调用，含长文档截断） ──
     cleaned, categories = llm_clean_and_classify(body, title)
 
-    # ── 大文档拆分 ──
-    parts = split_large(cleaned)
-    if not parts:
-        p.setdefault("failed_list", []).append(
-            {"id": doc_id, "title": title, "reason": "拆分后无有效内容"})
-        p["failed"] = p.get("failed", 0) + 1
-        return "no_parts"
-
     # ── 创建文档 ──
-    created_ids = []
-    part_bodies = []
-    for i, part in enumerate(parts):
-        final_title = f"{title}({i+1}/{len(parts)})" if len(parts) > 1 else title
-        result2, status2, _ = api_post(f"/repos/{TARGET_ID}/docs", {
-            "title": final_title, "body": part, "format": "markdown"
-        }, timeout=60)
-        if result2 is None:
-            if status2 == 429: return "rate_limit"
-            p.setdefault("failed_list", []).append(
-                {"id": doc_id, "title": title, "reason": f"创建失败(part {i+1}): {status2}"})
-            p["failed"] = p.get("failed", 0) + 1
-            return "create_failed"
-        new_id = result2["data"]["id"]
-        created_ids.append(new_id)
-        part_bodies.append((final_title, part))
-        p["created"] = p.get("created", 0) + 1
-        p["local_created"] = p.get("local_created", 0) + 1
-
-    if not created_ids:
+    result2, status2, _ = api_post(f"/repos/{TARGET_ID}/docs", {
+        "title": title, "body": cleaned, "format": "markdown"
+    }, timeout=60)
+    if result2 is None:
+        if status2 == 429: return "rate_limit"
         p.setdefault("failed_list", []).append(
-            {"id": doc_id, "title": title, "reason": "拆分后无创建结果"})
+            {"id": doc_id, "title": title, "reason": f"创建失败: {status2}"})
         p["failed"] = p.get("failed", 0) + 1
-        return "no_parts_created"
-
-    p["created_doc_mapping"][str(doc_id)] = created_ids[0] if len(created_ids) == 1 else created_ids
+        return "create_failed"
+    new_id = result2["data"]["id"]
+    p["created_doc_mapping"][str(doc_id)] = new_id
+    p["created"] = p.get("created", 0) + 1
+    p["local_created"] = p.get("local_created", 0) + 1
 
     # ── 挂目录（主分类 + 额外分类复制） ──
-    mount_docs_to_categories(p, created_ids, part_bodies, categories)
+    mount_docs_to_categories(p, [new_id], [(title, cleaned)], categories)
 
     n_cats = len(categories)
-    suffix = f"_split{len(parts)}_cats{n_cats}" if len(parts) > 1 else (
-        f"_cats{n_cats}" if n_cats > 1 else "")
+    suffix = f"_cats{n_cats}" if n_cats > 1 else ""
     return f"created{suffix}"
+
+
+def process_doc(doc, p):
+    """处理单篇文档：获取 body → 清洗分类 → 创建挂目录"""
+    global SOURCE_ID
+    result, status, headers = api_get(
+        f"/repos/{SOURCE_ID}/docs/{doc['id']}", {"raw": "1"}, timeout=90)
+    return _process_body(doc, p, result, status, headers)
+
+
+def process_doc_with_body(doc, p, body_result):
+    """使用预取的 body 结果处理文档（跳过 GET 请求）"""
+    result, status, headers = body_result
+    return _process_body(doc, p, result, status, headers)
 
 
 # ==================== 主流程 ====================
@@ -617,11 +589,14 @@ def main():
     global PROGRESS_FILE, SOURCE_ID, TARGET_ID, TARGET_NS
 
     import sys
-    if len(sys.argv) > 1:
-        PROGRESS_FILE = os.path.expanduser(sys.argv[1])
-    else:
-        PROGRESS_FILE = os.path.expanduser(
-            "~/.openclaw/workspace/utils/yuque/yuque-migration/progress/78699632_废弃19.json")
+    if len(sys.argv) < 2:
+        print("用法: python migrate.py <进度文件路径>", file=sys.stderr)
+        print("进度文件位于 utils/yuque-migration/progress/", file=sys.stderr)
+        sys.exit(1)
+    PROGRESS_FILE = os.path.expanduser(sys.argv[1])
+    if not os.path.exists(PROGRESS_FILE):
+        print(f"❌ 进度文件不存在: {PROGRESS_FILE}", file=sys.stderr)
+        sys.exit(1)
 
     print(f"📋 进度文件: {PROGRESS_FILE}")
     p = load_progress()
@@ -639,8 +614,21 @@ def main():
     print(f"   内存: 安全水位{SAFE_LIMIT_MB:.0f}MB, "
           f"当前RSS={rss:.0f}MB" if rss else f"   内存: 安全水位{SAFE_LIMIT_MB:.0f}MB", flush=True)
 
-    FATAL_RESULTS = {"fetch_error", "create_failed", "lake_failed", "no_parts", "no_parts_created", "error"}
+    FATAL_RESULTS = {"fetch_error", "create_failed", "lake_failed", "error"}
     consecutive_errors = 0
+
+    # ── 预取流水线：后台预取下一篇 body，消除网络 I/O 等待 ──
+    from concurrent.futures import ThreadPoolExecutor, Future
+    prefetch_executor = ThreadPoolExecutor(max_workers=1)
+    prefetch_future: Future | None = None
+    prefetch_doc = None  # 预取对应的 doc 信息
+
+    def should_prefetch():
+        """内存 > 80% 水位时跳过预取"""
+        if SAFE_LIMIT_MB is None:
+            return True
+        rss = _get_rss_mb()
+        return rss is not None and rss / SAFE_LIMIT_MB < 0.80
 
     while offset < total:
         if p.get("local_created", 0) >= 4500:
@@ -670,11 +658,25 @@ def main():
 
         _check_memory()
 
-        for doc in pending:
+        for idx, doc in enumerate(pending):
             doc_id = doc["id"]
             short_title = doc["title"][:60]
             print(f"  🔄 [{doc_id}] {short_title}...", end=" ", flush=True)
-            result = process_doc(doc, p)
+
+            # ── 尝试使用预取结果 ──
+            if prefetch_future is not None and prefetch_doc is not None and prefetch_doc["id"] == doc_id:
+                try:
+                    prefetched_body = prefetch_future.result(timeout=30)
+                except Exception:
+                    prefetched_body = None
+            else:
+                prefetched_body = None
+
+            if prefetched_body is not None:
+                result = process_doc_with_body(doc, p, prefetched_body)
+            else:
+                result = process_doc(doc, p)
+
             print(result, flush=True)
             p.setdefault("processed_doc_ids", []).append(doc_id)
 
@@ -690,13 +692,27 @@ def main():
                 consecutive_errors += 1
                 if consecutive_errors > 10:
                     print(f"\n❌ 连续 {consecutive_errors} 次致命错误，暂停。最后错误: {result}", flush=True)
+                    prefetch_executor.shutdown(wait=False)
                     save_progress(p)
                     return
             else:
                 consecutive_errors = 0
 
-            time.sleep(0.2)
+            gc.collect()
             save_progress(p)
+
+            # ── 预取下一篇 body（内存 < 80% 时启用） ──
+            next_idx = idx + 1
+            if next_idx < len(pending) and should_prefetch():
+                next_doc = pending[next_idx]
+                prefetch_doc = next_doc
+                prefetch_future = prefetch_executor.submit(
+                    api_get, f"/repos/{SOURCE_ID}/docs/{next_doc['id']}?raw=1")
+            else:
+                prefetch_future = None
+                prefetch_doc = None
+
+            time.sleep(0.1)
 
         all_done = all(d["id"] in p.get("processed_doc_ids", []) for d in docs)
         if all_done:
