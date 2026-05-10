@@ -12,7 +12,9 @@
 
 ### 方式一：下载 SKILL.md（推荐）
 
-从 [Releases](https://github.com/yehuoshun/yuque-migration-skill/releases/latest) 下载 `SKILL.md`，放入 OpenClaw 的 `skills/` 目录即可。
+从 [Releases](https://github.com/yehuoshun/yuque-migration-skill/releases/latest) 下载 `SKILL.md`，放入你使用的 AI Agent 框架的 skills 目录即可。
+
+支持：OpenClaw / Claude Code / Codex / Cursor / Copilot Chat 等任意支持 Markdown skill 的 LLM 工作流。
 
 ### 方式二：Git Clone
 
@@ -27,7 +29,7 @@ git clone https://github.com/yehuoshun/yuque-migration-skill.git
 
 ## 快速开始
 
-在 OpenClaw 中直接对话即可触发：
+在 AI 对话中直接说：
 
 ```
 将《我的笔记》内容整理到《归档库》
