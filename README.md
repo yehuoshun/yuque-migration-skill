@@ -25,7 +25,7 @@ git clone https://github.com/yehuoshun/yuque-migration-skill.git
 ## 前置条件
 
 1. 已在语雀创建源知识库和目标知识库
-2. 已配置语雀 API Token（通过 `yuque-ai` 配套 skill 或环境变量）
+2. 已获取语雀 API Token（[语雀开放平台](https://www.yuque.com/settings/tokens) 创建），配置为环境变量或写入配置文件
 
 ## 快速开始
 
