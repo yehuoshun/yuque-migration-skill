@@ -47,7 +47,7 @@ git clone https://github.com/yehuoshun/yuque-migration-skill.git
 
 | 脚本 | 说明 |
 |------|------|
-| `scripts/migrate.py` | 通用迁移脚本，支持断点续传、LLM 清洗、自动分类建目录 |
+| `scripts/migrate.py` | 通用迁移脚本（v3 内存感知版），支持断点续传、LLM 清洗、自动分类建目录 |
 | `scripts/retry_failed.py` | 重试失败文档导入 |
 | `scripts/migrate_batch.py` | 旧版批量迁移脚本（不再维护） |
 
@@ -150,10 +150,14 @@ flowchart TD
 - 404 → 直接跳过
 - 3 次全部失败 → 记入 `failed`
 
-### 并发控制
-- 同时处理 ≤ 5 篇文档
-- 累计正文 > 5MB → 暂停新请求
-- 单篇 > 10 万字 → 串行处理
+### 并发控制（内存感知自适应）
+- 不设固定并发数，由内存压力**实时动态决定**
+- 启动时读取 cgroup memory limit，安全水位 = Pod limit × 60%（未知默认 256MB）
+- 每批处理前检查 VmRSS，按水位自动调并发：
+  - RSS > 85% 安全水位 → 降为串行 + 强制 GC
+  - RSS > 60% 安全水位 → 并发降半 + GC
+  - RSS < 60% 安全水位 → 恢复初始并发（默认 5）
+- 语雀 API QPS 100/s，并发 5~10 完全碰不到限流线，仅响应 429 暂停等整点
 
 ---
 
