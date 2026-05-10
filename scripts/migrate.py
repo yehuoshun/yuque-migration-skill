@@ -577,10 +577,40 @@ def process_doc(doc, p):
 # ==================== TOC 目录挂载 ====================
 
 def classify_and_build_toc(p):
-    """迁移完成后，LLM分类建目录挂文档"""
+    """迁移完成后，LLM分类建目录挂文档
+    支持两个数据源：
+    1. created_docs_content: {doc_id: {title, body}} — 标准路径，含正文摘要
+    2. created_doc_mapping: {src_id: tgt_id} — 降级路径，仅标题分类
+    """
     global TARGET_ID
     
     created_docs = p.get("created_docs_content", {})
+    doc_mapping = p.get("created_doc_mapping", {})
+    
+    # 降级：无 created_docs_content 但有 created_doc_mapping
+    if not created_docs and doc_mapping:
+        print(f"  ⚠️ 无 created_docs_content，从 API 拉取 {len(doc_mapping)} 篇标题（降级模式）")
+        created_docs = {}
+        # 分批从目标库拉取文档列表获取标题
+        fetched = 0
+        page = 0
+        while fetched < len(doc_mapping):
+            result, status, _ = api_get(f"/repos/{TARGET_ID}/docs",
+                                         {"offset": str(page), "limit": "100"})
+            if result is None:
+                print(f"  ❌ 获取目标库文档列表失败: {status}")
+                break
+            for d in result.get("data", []):
+                did = str(d["id"])
+                if did in doc_mapping.values() or did in [str(v) for v in doc_mapping.values()]:
+                    created_docs[did] = {"title": d["title"], "body": d.get("description", "") or ""}
+                    fetched += 1
+            page += 100
+            if not result.get("data"):
+                break
+            time.sleep(0.3)
+        print(f"  已获取 {len(created_docs)} 篇标题")
+    
     if not created_docs:
         print("  ⚠️ 无已创建文档，跳过目录挂载")
         return
@@ -730,7 +760,9 @@ def main():
     
     # 从命令行或配置读取进度文件
     import sys
-    if len(sys.argv) > 1:
+    toc_only = "--toc-only" in sys.argv
+    
+    if len(sys.argv) > 1 and sys.argv[1] not in ("--toc-only",):
         PROGRESS_FILE = os.path.expanduser(sys.argv[1])
     else:
         # 默认
@@ -754,6 +786,13 @@ def main():
     # 连续错误计数
     FATAL_RESULTS = {"fetch_error", "create_failed", "lake_failed", "no_parts", "no_parts_created", "error"}
     consecutive_errors = 0
+
+    if toc_only:
+        print("📂 --toc-only: 跳过迁移，仅执行目录挂载", flush=True)
+        classify_and_build_toc(p)
+        save_progress(p)
+        print("\n🎉 目录挂载完成！", flush=True)
+        return
 
     while offset < total:
         if p.get("local_created", 0) >= 4500:
