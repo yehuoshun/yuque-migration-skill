@@ -189,18 +189,19 @@ def needs_llm_cleaning(body):
     if not stripped:
         return False
 
+    code_indicators = (
+        'INSERT INTO', 'SELECT ', 'CREATE TABLE', 'ALTER TABLE', 'DROP ',
+        '#include', '#define', '#ifndef', '#pragma',
+        'import ', 'from ', 'package ', 'func ', 'fn ', 'def ',
+        '<?php', '<!DOCTYPE', '<html', '<template',
+        '#!/', 'use ', 'module ', 'require(',
+    )
+
     # ── 纯代码文档检测 ──
     # 代码块包裹且内容是源代码特征
     code_wrapped = re.match(r'^```\w*\n', stripped)
     if code_wrapped:
         inner = re.sub(r'^```\w*\n|```$', '', stripped, flags=re.DOTALL).strip()
-        code_indicators = (
-            'INSERT INTO', 'SELECT ', 'CREATE TABLE', 'ALTER TABLE', 'DROP ',
-            '#include', '#define', '#ifndef', '#pragma',
-            'import ', 'from ', 'package ', 'func ', 'fn ', 'def ',
-            '<?php', '<!DOCTYPE', '<html', '<template',
-            '#!/', 'use ', 'module ', 'require(',
-        )
         if inner.startswith(code_indicators):
             return False
         # 全代码块且没有自然语言段落
@@ -364,7 +365,18 @@ def ensure_category(p, cat_name):
                 if parent_uuid and parent_uuid not in toc_map.values():
                     toc_map[cat_name] = parent_uuid  # 降级缓存
                 return parent_uuid
-        parent_uuid = result["data"]["uuid"]
+        # data 是数组，匹配 title 找到刚创建的节点
+        found = False
+        for item in result["data"]:
+            if item.get("title") == part:
+                parent_uuid = item["uuid"]
+                found = True
+                break
+        if not found:
+            print(f"  ⚠️ 创建目录 '{part}' 后找不到节点，降级")
+            if parent_uuid and parent_uuid not in toc_map.values():
+                toc_map[cat_name] = parent_uuid
+            return parent_uuid
 
     toc_map[cat_name] = parent_uuid
     return parent_uuid
