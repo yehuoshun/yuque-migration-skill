@@ -113,7 +113,7 @@ GET /repos/{target_book_id} → 取 items_count
 继续时更新 target_book_id 到进度文件
 ```
 
-⚠️ `items_count` 可能存在缓存延迟。验证方法：查完 `items_count` 后拉一页文档列表（`GET /repos/{target_book_id}/docs?limit=1`），空列表才确认是空库。
+⚠️ `items_count` 可能有缓存延迟。后续本地原子累加 `local_created` 兜底——如果本地累计显示超了但还没触发 429，说明 items_count 取少了，实际容量以本地累计为准提前给预警。不额外调 API 验证。
 
 > 容量检查只调一次 API 取初始值，迁移过程中**本地累加**已创建文档数。
 > 仅在续传时重新 API 查询（防止中断期间他人写入）。详见步骤 3d。
