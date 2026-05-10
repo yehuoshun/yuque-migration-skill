@@ -14,21 +14,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Auto Tag
-        run: |
-          VER=$(echo "${{ github.event.head_commit.message }}" | grep -oP '^v\d+(\.\d+)*' | head -1)
-          if [ -n "$VER" ]; then
-            if ! git rev-parse "$VER" >/dev/null 2>&1; then
-              git tag -a "$VER" -m "Release $VER"
-              git push origin "$VER"
-              echo "✅ Tagged $VER"
-            else
-              echo "⏭️ Tag $VER already exists"
-            fi
-          else
-            echo "⏭️ No version prefix found in commit message"
-          fi
-
       - name: Update Release
         uses: softprops/action-gh-release@v2
         with:
