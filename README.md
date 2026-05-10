@@ -73,8 +73,9 @@
 
 ### 2. 运行迁移
 
-由 AI Agent 驱动，用户说「将《xxx》内容整理到《yyy》」即可触发。
+由 AI Agent 驱动，用户说「将《xxx》内容整理到《yyy》」或「将《xxx》内容迁移到《yyy》」即可触发。
 
+《xxx》/《yyy》可以是知识库名、ID、slug。若名称匹配多个同名知识库，Agent 会让用户选择。
 或直接使用脚本：
 
 ```bash
@@ -114,7 +115,7 @@ python scripts/migrate.py progress/12345_旧库名.json
 
 ## 使用方式
 
-由 AI Agent 驱动。用户说「**将《xxx》内容整理到《yyy》**」即可触发。
+由 AI Agent 驱动。用户说「**将《xxx》内容整理到《yyy》**」或「**将《xxx》内容迁移到《yyy》**」即可触发。
 
 AI Agent 会自动：
 1. 检查配置 → 获取旧库信息 → 验证目标库 → 检查容量
