@@ -58,7 +58,7 @@
 
 ### 1. 创建配置文件
 
-在 `utils/yuque/yuque-ai/yuque-config.json`：
+默认路径 `utils/yuque/yuque-ai/yuque-config.json`（可自定义）：
 
 ```json
 {
