@@ -1,4 +1,12 @@
 __pycache__/
 *.log
 *.tmp
-progress/
+
+# 忽略运行时数据，保留目录结构
+progress/*
+!progress/.gitkeep
+logs/*
+!logs/.gitkeep
+
+# 防止 token 泄露
+config/yuque-config.json

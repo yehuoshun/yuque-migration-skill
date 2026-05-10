@@ -79,10 +79,10 @@
 
 ```bash
 # 首次运行（需 AI Agent 先生成进度文件）
-python scripts/migrate.py utils/yuque-migration/progress/12345_旧库名.json
+python scripts/migrate.py progress/12345_旧库名.json
 
 # 中断续传（直接重新运行同一命令）
-python scripts/migrate.py utils/yuque-migration/progress/12345_旧库名.json
+python scripts/migrate.py progress/12345_旧库名.json
 ```
 
 ## 配置说明
@@ -129,13 +129,13 @@ AI Agent 会自动：
 
 ### 进度文件
 
-位于 `utils/yuque-migration/progress/{book_id}_{旧库名}.json`，由 AI Agent 在步骤 1 阶段自动创建。
+位于 `progress/{book_id}_{旧库名}.json`（skill 目录下的 progress 文件夹，可自定义），由 AI Agent 在步骤 1 阶段自动创建。
 
 续传时自动从 `last_offset` 恢复，`toc_map` 保留已建目录复用。
 
 ### 日志
 
-位于 `utils/yuque-migration/logs/`。
+位于 `logs/`（skill 目录下的 logs 文件夹，可自定义）。
 
 ## 项目结构
 
@@ -143,6 +143,11 @@ AI Agent 会自动：
 yuque-migration-skill/
 ├── SKILL.md              # Skill 规范文档（AI Agent 执行指南）
 ├── README.md             # 本文件
+├── LICENSE
+├── config/
+│   └── yuque-config.json # 配置文件（默认路径，可自定义）
+├── progress/             # 迁移进度文件（默认路径，可自定义）
+├── logs/                 # 迁移日志（默认路径，可自定义）
 ├── scripts/
 │   └── migrate.py        # v4 迁移脚本
 ├── references/
