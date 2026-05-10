@@ -43,6 +43,16 @@ git clone https://github.com/yehuoshun/yuque-migration-skill.git
 
 ---
 
+## 工具脚本
+
+| 脚本 | 说明 |
+|------|------|
+| `scripts/migrate.py` | 通用迁移脚本，支持断点续传、LLM 清洗、自动分类建目录 |
+| `scripts/retry_failed.py` | 重试失败文档导入 |
+| `scripts/migrate_batch.py` | 旧版批量迁移脚本（不再维护） |
+
+---
+
 ## 功能特性
 
 | 功能 | 说明 |
