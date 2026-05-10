@@ -128,13 +128,22 @@ GET /repos/{book_id}/docs?offset={N}&limit=100
 
 对每篇文档：
 1. `GET /repos/{book_id}/docs/{doc_id}?raw=1` 读取原文
-2. 空文档跳过。先 `GET /repos/{book_id}/docs/{doc_id}?raw=1` 读取原文，取 `format` 字段：
+2. **标题截断**：语雀 API 标题长度上限约 150 字符。创建文档前检查标题长度，超过 150 字符截断并加 `...`。否则 POST 会返回 400/422。
+3. 空文档跳过。先 `GET /repos/{book_id}/docs/{doc_id}?raw=1` 读取原文，取 `format` 字段：
    - **markdown** → 正常走清洗流程
    - **lake** → 不跳过，取 `body_lake` 字段（原生格式）作为文档内容，用 `format: "lake"` 创建到目标库。不做格式清洗、不去重（lake 格式无法比对文本）。标题保持不变，有附件链接原样保留。标记原因「lake 格式无损搬运」
    - **其他未知格式** → 记入 `failed`，标记原因「未知格式: {format}」
    - 空 body（去除空白后为空）→ 记入 `skipped_empty`，跳过
 3. **二进制检测**：内容采样前 200 字符，若非 ASCII + 控制字符比例 > 25% 则判定为二进制文件 → 跳过（不记入 failed，直接跳过）
 4. **格式清洗**：丢给 LLM 清理广告/免责条款/水评论/HTML残留，保留有技术价值的评论和内部链接。发现附件引用（图片/文件链接）标注到 `docs_with_attachments` 清单。
+
+   **清洗优化**：以下类型内容**跳过 LLM 清洗**（无广告/水评需要清理，LLM 调用增加耗时和超时风险）：
+   - SQL dump（`INSERT INTO`、`CREATE TABLE` 等开头）
+   - JSON 数组/对象
+   - 纯代码文件（源码文件如 `.js`、`.py` 等）
+   - 小于 500 字符的短文档（引用/索引类，清洗无意义）
+   
+   跳过清洗的文档仍需做表格格式修复（移除包裹表格的代码块、移除表格行缩进）。
 
    **清洗后表格自检**（创建文档前逐篇检查）：
    
@@ -196,6 +205,25 @@ GET /repos/{book_id}/docs?offset={N}&limit=100
 ```
 5. **去重**：先用 `GET /search?q={标题}&type=doc&scope={目标库namespace}` 搜标题 → 有匹配则 GET 该文档正文，逐级比对（200 字 → 500 字 → 全文），任意一级不同即视为不同文档；完全相同跳过；标题相同内容不同加 `(重复标题-N)`，N 为目标库已有同名最大编号+1
 6. **大文档**：>50000 字（约 200KB，不统计代码块内字数）→ 按内容结构拆分，标题加 `(1/N)` 后缀<br>拆分优先级：`##` 标题 → `###` 标题 → 段落边界（空行）<br>铁律：不断在段内、不跨代码块/表格切、代码块跟随最近的标题整块带走、每份 ≤50000 字
+
+   ⚠️ **代码块安全拆分**：用 `re.split(r'\n(?=## )', body)` 会在代码块内的 `##` 处错误切分。必须**逐行解析**，跟踪 ``` 进出状态，仅当不在代码块内且遇到标题时才切分：
+   
+   ```python
+   in_code = False
+   sections = []
+   current = ""
+   for line in body.split('\n'):
+       if line.strip().startswith('```'):
+           in_code = not in_code
+       if not in_code and (line.startswith('## ') or line.startswith('### ')):
+           if current:
+               sections.append(current)
+           current = line + '\n'
+       else:
+           current += line + '\n'
+   if current.strip():
+       sections.append(current)
+   ```
 7. `POST /repos/{book_id}/docs` 创建文档，收集 `doc_id`
 
 API 超时（>30s）→ 下载到本地处理，处理完清理临时文件。
