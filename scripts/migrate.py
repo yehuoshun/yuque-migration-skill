@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""语雀知识库迁移脚本 v2 - 修复版
+"""语雀知识库迁移脚本 v3 - 内存感知版
 修复：is_binary中文误判、标题换行符422、图片token跳过、群号文档跳过、
      大文档LLM拆分、连续错误检测、no_parts漏计、超时指数退避
-新增：迁移完成后自动LLM分类建目录挂文档
+新增：内存感知自适应并发（防 K8s OOM）、迁移完成后自动LLM分类建目录挂文档
 """
 
-import json, time, re, os, urllib.request, urllib.error, urllib.parse
+import json, time, re, os, gc, urllib.request, urllib.error, urllib.parse
 from datetime import datetime, timedelta
 
 BASE = "https://www.yuque.com/api/v2"
@@ -18,7 +18,61 @@ TARGET_ID = None
 TARGET_NS = None
 
 BATCH_SIZE = 100
-CONCURRENCY = 5  # 串行处理，但保持变量名
+MAX_WORKERS_INIT = 5
+MAX_WORKERS = 5  # 运行时动态调整
+
+# ── 内存感知 (K8s OOM 防杀) ──
+def _get_pod_mem_limit():
+    """读取 cgroup 内存 limit (bytes)，失败返回 None"""
+    for p in ['/sys/fs/cgroup/memory/memory.limit_in_bytes',
+              '/sys/fs/cgroup/memory.max']:
+        try:
+            with open(p) as f:
+                v = int(f.read().strip())
+                if v < 10 * 1024**4:
+                    return v
+        except:
+            pass
+    return None
+
+def _get_rss_mb():
+    """当前进程 RSS (MB)"""
+    try:
+        with open('/proc/self/status') as f:
+            for line in f:
+                if line.startswith('VmRSS:'):
+                    return int(line.split()[1]) / 1024
+    except:
+        pass
+    return None
+
+POD_LIMIT_B = _get_pod_mem_limit()
+SAFE_LIMIT_MB = (POD_LIMIT_B / 1024 / 1024 * 0.6) if POD_LIMIT_B else 256
+
+def _check_memory():
+    """检查内存压力，返回 True = 安全，False = 高压力需降并发"""
+    global MAX_WORKERS
+    rss = _get_rss_mb()
+    if rss is None:
+        return True
+    ratio = rss / SAFE_LIMIT_MB
+    if ratio > 0.85:
+        MAX_WORKERS = 1
+        print(f"  ⚠️ 内存高压 {rss:.0f}/{SAFE_LIMIT_MB:.0f}MB ({ratio:.0%}), 降为串行", flush=True)
+        gc.collect()
+        return False
+    elif ratio > 0.60:
+        new_w = max(1, MAX_WORKERS_INIT // 2)
+        if MAX_WORKERS != new_w:
+            MAX_WORKERS = new_w
+            print(f"  ⚡ 内存中压 {rss:.0f}/{SAFE_LIMIT_MB:.0f}MB ({ratio:.0%}), 并发→{new_w}", flush=True)
+        gc.collect()
+        return True
+    else:
+        if MAX_WORKERS < MAX_WORKERS_INIT:
+            MAX_WORKERS = MAX_WORKERS_INIT
+            print(f"  ✅ 内存恢复 {rss:.0f}/{SAFE_LIMIT_MB:.0f}MB, 并发→{MAX_WORKERS_INIT}", flush=True)
+        return True
 
 with open(CONFIG_FILE) as f:
     cfg = json.load(f)
@@ -694,6 +748,8 @@ def main():
     print(f"   源库: {p['source_name']} ({SOURCE_ID})")
     print(f"   目标库: {p['target_name']} ({TARGET_ID})")
     print(f"   目标库累计: {p.get('local_created', 0)}/4500", flush=True)
+    rss = _get_rss_mb()
+    print(f"   内存: 安全水位{SAFE_LIMIT_MB:.0f}MB, 当前RSS={rss:.0f}MB" if rss else f"   内存: 安全水位{SAFE_LIMIT_MB:.0f}MB", flush=True)
 
     # 连续错误计数
     FATAL_RESULTS = {"fetch_error", "create_failed", "lake_failed", "no_parts", "no_parts_created", "error"}
@@ -723,6 +779,8 @@ def main():
         already_done = [d for d in docs if d["id"] in p.get("processed_doc_ids", [])]
         pending = [d for d in docs if d["id"] not in p.get("processed_doc_ids", [])]
         print(f"  已处理 {len(already_done)}，待处理 {len(pending)}", flush=True)
+
+        _check_memory()  # 每批前检查内存压力
 
         for doc in pending:
             doc_id = doc["id"]
