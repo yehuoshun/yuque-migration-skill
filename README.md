@@ -22,8 +22,10 @@
 
 ## 前置条件
 
-1. **语雀 Token**：需 `doc:read` `doc:write` `repo:read` `repo:write` 权限
-2. **LLM 配置**：兼容 OpenAI Chat Completions API 的模型（DeepSeek / OpenAI / 通义千问 等）
+**配置分两步检查，缺哪块补哪块：**
+
+1. **语雀 Token**：需 `doc:read` `doc:write` `repo:read` `repo:write` 权限（第一步检查）
+2. **LLM 配置**：兼容 OpenAI Chat Completions API 的模型，需 `model` / `url` / `api_key` 三项齐全（第二步检查）
 3. **目标知识库**：需提前创建
 
 ### 配置文件
