@@ -2,6 +2,8 @@
 
 > 将语雀知识库内容复制整理到另一个知识库 —— 清洗+分类合并、去重、长文档截断、逐篇挂目录、断点续传。
 
+> 📄 **Skill 规范文档**：[SKILL.md](./SKILL.md) — AI Agent 执行指南，所有功能细节以该文件为准。
+
 **核心理念：复制不搬。原库完全不动。**
 
 [![Release](https://img.shields.io/github/v/release/yehuoshun/yuque-migration-skill?label=release)](https://github.com/yehuoshun/yuque-migration-skill/releases)
