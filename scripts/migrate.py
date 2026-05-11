@@ -672,9 +672,12 @@ def process_doc_with_body(doc, p, body_result):
 # ==================== 主流程 ====================
 
 def main():
-    global PROGRESS_FILE, SOURCE_ID, TARGET_ID, TARGET_NS
+    global PROGRESS_FILE, SOURCE_ID, TARGET_ID, TARGET_NS, MAX_WORKERS
 
     import sys
+    from concurrent.futures import ThreadPoolExecutor, Future, as_completed
+    from threading import Lock
+
     if len(sys.argv) < 2:
         print("用法: python migrate.py <进度文件路径>", file=sys.stderr)
         print("进度文件位于 utils/yuque-migration/progress/", file=sys.stderr)
@@ -696,25 +699,190 @@ def main():
     print(f"   源库: {p['source_name']} ({SOURCE_ID})")
     print(f"   目标库: {p['target_name']} ({TARGET_ID})")
     print(f"   目标库累计: {p.get('local_created', 0)}/4500", flush=True)
+    if POD_LIMIT_B:
+        print(f"   容器内存上限: {POD_LIMIT_B/1024/1024:.0f}MB, 安全水位: {SAFE_LIMIT_MB:.0f}MB")
+    else:
+        print(f"   安全水位: {SAFE_LIMIT_MB:.0f}MB")
     rss = _get_rss_mb()
-    print(f"   内存: 安全水位{SAFE_LIMIT_MB:.0f}MB, "
-          f"当前RSS={rss:.0f}MB" if rss else f"   内存: 安全水位{SAFE_LIMIT_MB:.0f}MB", flush=True)
+    print(f"   RSS={rss:.0f}MB" if rss else "", flush=True)
 
+    # ── 线程安全锁 ──
+    p_lock = Lock()       # 保护 progress dict 的读写
+    toc_lock = Lock()     # 保护 TOC 目录树操作
+    
     FATAL_RESULTS = {"fetch_error", "create_failed", "lake_failed", "error"}
     consecutive_errors = 0
+    error_lock = Lock()
 
-    # ── 预取流水线：后台预取下一篇 body，消除网络 I/O 等待 ──
-    from concurrent.futures import ThreadPoolExecutor, Future
-    prefetch_executor = ThreadPoolExecutor(max_workers=1)
-    prefetch_future: Future | None = None
-    prefetch_doc = None  # 预取对应的 doc 信息
+    def process_one_doc(doc):
+        """线程安全的单文档处理：获取 → 清洗 → 创建 → 挂目录
+        在独立线程中运行，LLM 调用不加锁（真正的并行），
+        仅创建文档和挂目录时使用 p_lock / toc_lock 保护共享状态。
+        """
+        nonlocal consecutive_errors
+        doc_id = doc["id"]
+        short_title = doc["title"][:60]
+        orig_title = doc["title"]
+        title = fix_title(orig_title)
 
-    def should_prefetch():
-        """内存 > 80% 水位时跳过预取"""
-        if SAFE_LIMIT_MB is None:
-            return True
-        rss = _get_rss_mb()
-        return rss is not None and rss / SAFE_LIMIT_MB < 0.80
+        # ── 阶段 1：获取 body（无锁，各线程独立） ──
+        result, status, headers = api_get(
+            f"/repos/{SOURCE_ID}/docs/{doc_id}", {"raw": "1"}, timeout=90)
+
+        # ── 阶段 2：格式检查 + Lake 判断（只读，无锁） ──
+        if result is None:
+            if status == 404:
+                with p_lock:
+                    p.setdefault("skipped_empty", []).append({"doc_id": doc_id, "title": title})
+                    p["skipped"] = p.get("skipped", 0) + 1
+                    p.setdefault("processed_doc_ids", []).append(doc_id)
+                print(f"  🔄 [{doc_id}] {short_title}... empty_404", flush=True)
+                return "empty_404"
+            if status == 429:
+                return "rate_limit"
+            with p_lock:
+                p.setdefault("failed_list", []).append(
+                    {"id": doc_id, "title": title, "reason": f"获取失败: {status}"})
+                p["failed"] = p.get("failed", 0) + 1
+                p.setdefault("processed_doc_ids", []).append(doc_id)
+            print(f"  🔄 [{doc_id}] {short_title}... fetch_error", flush=True)
+            return "fetch_error"
+
+        data = result.get("data", {})
+        fmt = data.get("format", "markdown")
+        body = data.get("body", "")
+
+        # Lake 无损搬运
+        if fmt == "lake":
+            body_lake = data.get("body_lake", body)
+            result2, status2, _ = api_post(f"/repos/{TARGET_ID}/docs", {
+                "title": title, "body": body_lake, "format": "lake"
+            }, timeout=60)
+            if result2 is None:
+                if status2 == 429: return "rate_limit"
+                with p_lock:
+                    p.setdefault("failed_list", []).append(
+                        {"id": doc_id, "title": title, "reason": f"lake创建失败: {status2}"})
+                    p["failed"] = p.get("failed", 0) + 1
+                    p.setdefault("processed_doc_ids", []).append(doc_id)
+                print(f"  🔄 [{doc_id}] {short_title}... lake_failed", flush=True)
+                return "lake_failed"
+            new_id = result2["data"]["id"]
+            with toc_lock:
+                with p_lock:
+                    p.setdefault("lake_docs", []).append(
+                        {"doc_id": doc_id, "new_id": new_id, "title": title, "reason": "lake格式无损搬运"})
+                    p["created_doc_mapping"][str(doc_id)] = new_id
+                    p["created"] = p.get("created", 0) + 1
+                    p["local_created"] = p.get("local_created", 0) + 1
+                    p.setdefault("processed_doc_ids", []).append(doc_id)
+                    original_mount(p, [new_id], [(title, body_lake)], ["未分类"])
+            print(f"  🔄 [{doc_id}] {short_title}... lake_created", flush=True)
+            return "lake_created"
+
+        # 格式过滤
+        UNSUPPORTED_FORMATS = {"doc", "docx", "pdf", "image", "png", "jpg", "jpeg",
+                               "gif", "ppt", "pptx", "xls", "xlsx", "zip", "rar"}
+        if fmt in UNSUPPORTED_FORMATS:
+            with p_lock:
+                p.setdefault("skipped_unsupported", []).append(
+                    {"doc_id": doc_id, "title": title, "format": fmt, "reason": "不支持的文件格式"})
+                p["skipped"] = p.get("skipped", 0) + 1
+                p.setdefault("processed_doc_ids", []).append(doc_id)
+            print(f"  🔄 [{doc_id}] {short_title}... skipped_format_{fmt}", flush=True)
+            return f"skipped_format_{fmt}"
+        if fmt not in ("markdown", "lake"):
+            with p_lock:
+                p.setdefault("failed_list", []).append(
+                    {"id": doc_id, "title": title, "reason": f"未知格式: {fmt}"})
+                p["failed"] = p.get("failed", 0) + 1
+                p.setdefault("processed_doc_ids", []).append(doc_id)
+            print(f"  🔄 [{doc_id}] {short_title}... unknown_format_{fmt}", flush=True)
+            return f"unknown_format_{fmt}"
+
+        # 空文档 / 无意义 / 二进制检测
+        if not body or not body.strip():
+            with p_lock:
+                p.setdefault("skipped_empty", []).append({"doc_id": doc_id, "title": title})
+                p["skipped"] = p.get("skipped", 0) + 1
+                p.setdefault("processed_doc_ids", []).append(doc_id)
+            print(f"  🔄 [{doc_id}] {short_title}... empty", flush=True)
+            return "empty"
+        if is_img_token(body):
+            with p_lock:
+                p.setdefault("skipped_img_token", []).append(
+                    {"doc_id": doc_id, "title": title, "reason": "图片token文档"})
+                p["skipped"] = p.get("skipped", 0) + 1
+                p.setdefault("processed_doc_ids", []).append(doc_id)
+            print(f"  🔄 [{doc_id}] {short_title}... skipped_img_token", flush=True)
+            return "skipped_img_token"
+        if is_meaningless_doc(orig_title, body):
+            with p_lock:
+                p.setdefault("skipped_meaningless", []).append(
+                    {"doc_id": doc_id, "title": title, "reason": "无意义文档"})
+                p["skipped"] = p.get("skipped", 0) + 1
+                p.setdefault("processed_doc_ids", []).append(doc_id)
+            print(f"  🔄 [{doc_id}] {short_title}... skipped_meaningless", flush=True)
+            return "skipped_meaningless"
+        if is_binary(body):
+            with p_lock:
+                p.setdefault("skipped_binary", []).append({"doc_id": doc_id, "title": title})
+                p["skipped"] = p.get("skipped", 0) + 1
+                p.setdefault("processed_doc_ids", []).append(doc_id)
+            print(f"  🔄 [{doc_id}] {short_title}... binary", flush=True)
+            return "binary"
+
+        # ── 阶段 3：LLM 清洗 + 分类（无锁！真正的并行瓶颈在此突破） ──
+        cleaned, categories = llm_clean_and_classify(body, title)
+
+        # ── 阶段 4：创建文档 + 挂目录（p_lock + toc_lock） ──
+        result2, status2, _ = api_post(f"/repos/{TARGET_ID}/docs", {
+            "title": title, "body": cleaned, "format": "markdown"
+        }, timeout=60)
+        if result2 is None:
+            if status2 == 429: return "rate_limit"
+            with p_lock:
+                p.setdefault("failed_list", []).append(
+                    {"id": doc_id, "title": title, "reason": f"创建失败: {status2}"})
+                p["failed"] = p.get("failed", 0) + 1
+                p.setdefault("processed_doc_ids", []).append(doc_id)
+            print(f"  🔄 [{doc_id}] {short_title}... create_failed", flush=True)
+            return "create_failed"
+        new_id = result2["data"]["id"]
+
+        n_cats = len(categories)
+        with toc_lock:
+            with p_lock:
+                p["created_doc_mapping"][str(doc_id)] = new_id
+                p["created"] = p.get("created", 0) + 1
+                p["local_created"] = p.get("local_created", 0) + 1
+                p.setdefault("processed_doc_ids", []).append(doc_id)
+                original_mount(p, [new_id], [(title, cleaned)], categories)
+
+        suffix = f"_cats{n_cats}" if n_cats > 1 else ""
+        res = f"created{suffix}"
+        print(f"  🔄 [{doc_id}] {short_title}... {res}", flush=True)
+
+        # ── 错误计数 ──
+        with error_lock:
+            if res in FATAL_RESULTS or res.startswith("unknown_format_"):
+                consecutive_errors += 1
+            else:
+                consecutive_errors = 0
+
+        return res
+
+    # ── 并行的 _process_body 需要访问 TOC 锁 ──
+    # 修改 _process_body 中 mount_docs_to_categories 调用，改用带锁版本
+    original_mount = mount_docs_to_categories
+    def mount_docs_to_categories_locked(p, doc_ids, part_bodies, categories):
+        with toc_lock:
+            return original_mount(p, doc_ids, part_bodies, categories)
+
+    # 替换模块级函数引用，让 _process_body 走带 TOC 锁的版本
+    globals()['mount_docs_to_categories'] = mount_docs_to_categories_locked
+
+    print(f"  🧵 并发数: {MAX_WORKERS}", flush=True)
 
     while offset < total:
         if p.get("local_created", 0) >= 4500:
@@ -742,71 +910,50 @@ def main():
         pending = [d for d in docs if d["id"] not in p.get("processed_doc_ids", [])]
         print(f"  已处理 {len(already_done)}，待处理 {len(pending)}", flush=True)
 
+        if not pending:
+            offset += len(docs)
+            p["last_offset"] = offset
+            save_progress(p)
+            continue
+
+        # ── 内存感知并发控制 ──
         _check_memory()
 
-        for idx, doc in enumerate(pending):
-            doc_id = doc["id"]
-            short_title = doc["title"][:60]
-            print(f"  🔄 [{doc_id}] {short_title}...", end=" ", flush=True)
-
-            # ── 尝试使用预取结果 ──
-            if prefetch_future is not None and prefetch_doc is not None and prefetch_doc["id"] == doc_id:
+        # ── 并行处理本批所有待处理文档 ──
+        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+            futures = {executor.submit(process_one_doc, doc): doc for doc in pending}
+            for future in as_completed(futures):
+                doc = futures[future]
                 try:
-                    prefetched_body = prefetch_future.result(timeout=30)
-                except Exception:
-                    prefetched_body = None
-            else:
-                prefetched_body = None
+                    res = future.result()
+                except Exception as e:
+                    print(f"  ❌ [{doc['id']}] 线程异常: {e}", flush=True)
+                    with p_lock:
+                        p.setdefault("failed_list", []).append(
+                            {"id": doc["id"], "title": doc["title"], "reason": f"线程异常: {e}"})
+                        p["failed"] = p.get("failed", 0) + 1
+                        p.setdefault("processed_doc_ids", []).append(doc["id"])
 
-            if prefetched_body is not None:
-                result = process_doc_with_body(doc, p, prefetched_body)
-            else:
-                result = process_doc(doc, p)
-
-            print(result, flush=True)
-            p.setdefault("processed_doc_ids", []).append(doc_id)
-
-            if result == "rate_limit":
+            # 连续错误检查
+            if consecutive_errors > 10:
+                print(f"\n❌ 连续 {consecutive_errors} 次致命错误，暂停。", flush=True)
                 save_progress(p)
-                wait_until_next_hour()
-                p["processed_doc_ids"].remove(doc_id)
-                retry = process_doc(doc, p)
-                print(f"  🔄 重试 [{doc_id}]: {retry}", flush=True)
-                p.setdefault("processed_doc_ids", []).append(doc_id)
-
-            if result in FATAL_RESULTS or result.startswith("unknown_format_"):
-                consecutive_errors += 1
-                if consecutive_errors > 10:
-                    print(f"\n❌ 连续 {consecutive_errors} 次致命错误，暂停。最后错误: {result}", flush=True)
-                    prefetch_executor.shutdown(wait=False)
-                    save_progress(p)
-                    return
-            else:
-                consecutive_errors = 0
+                return
 
             gc.collect()
             save_progress(p)
-
-            # ── 预取下一篇 body（内存 < 80% 时启用） ──
-            next_idx = idx + 1
-            if next_idx < len(pending) and should_prefetch():
-                next_doc = pending[next_idx]
-                prefetch_doc = next_doc
-                prefetch_future = prefetch_executor.submit(
-                    api_get, f"/repos/{SOURCE_ID}/docs/{next_doc['id']}?raw=1")
-            else:
-                prefetch_future = None
-                prefetch_doc = None
-
             time.sleep(0.1)
 
-        all_done = all(d["id"] in p.get("processed_doc_ids", []) for d in docs)
-        if all_done:
-            offset += len(docs)
-            p["last_offset"] = offset
-        else:
-            print(f"  ⚠️ 本批未完全处理，offset保持 {offset}", flush=True)
-            p["last_offset"] = offset
+        # ── 本批完成，更新 offset ──
+        with p_lock:
+            all_done = all(d["id"] in p.get("processed_doc_ids", []) for d in docs)
+            if all_done:
+                offset += len(docs)
+                p["last_offset"] = offset
+            else:
+                print(f"  ⚠️ 本批未完全处理，offset保持 {offset}", flush=True)
+                p["last_offset"] = offset
+
         save_progress(p)
         print(f"  📊 {offset}/{total} ({offset*100//total}%), "
               f"创={p['created']} 跳={p['skipped']} 败={p['failed']}", flush=True)
