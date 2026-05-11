@@ -332,8 +332,30 @@ def wait_until_next_hour():
     print(f"  ✅ 恢复执行", flush=True)
 
 
+def _find_title_in_toc(nodes, target_title, parent_uuid):
+    """在 TOC 树中查找匹配的 TITLE 节点
+    nodes: TOC 节点列表（dict 或 list）
+    返回 uuid 或 None
+    """
+    if isinstance(nodes, dict):
+        nodes = [nodes]
+    if not isinstance(nodes, list):
+        return None
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        if node.get("type") == "TITLE" and node.get("title") == target_title:
+            np = node.get("parent_uuid")
+            if (parent_uuid is None and (np is None or np == "")) or np == parent_uuid:
+                return node["uuid"]
+        found = _find_title_in_toc(node.get("children", []), target_title, parent_uuid)
+        if found:
+            return found
+    return None
+
 def ensure_category(p, cat_name):
     """确保分类目录存在，返回最终层级的 uuid
+    先查后建：先从 TOC 树查找已有 TITLE，找不到才创建
     自动处理 / 分隔的层级路径（如 "技术/前端" → 建两级 TITLE）
     429 时等整点重试，失败降级返回父层级 uuid
     """
@@ -342,10 +364,21 @@ def ensure_category(p, cat_name):
     if cat_name in toc_map:
         return toc_map[cat_name]
 
+    # 拉取全量 TOC 树（每次确保最新，语雀 API 无增量查询）
+    toc_result, _, _ = api_get(f"/repos/{TARGET_ID}/toc")
+    toc_tree = toc_result.get("data", []) if toc_result else []
+
     cat_parts = cat_name.split("/")
     parent_uuid = None
 
     for part in cat_parts:
+        # 1. 先查 TOC 树中是否已有同名 TITLE
+        existing = _find_title_in_toc(toc_tree, part, parent_uuid)
+        if existing:
+            parent_uuid = existing
+            continue
+
+        # 2. 不存在则创建
         result, status, _ = api_put(f"/repos/{TARGET_ID}/toc", {
             "action": "appendNode",
             "action_mode": "child",
@@ -362,20 +395,18 @@ def ensure_category(p, cat_name):
                 })
             if result is None:
                 print(f"  ⚠️ 创建目录 '{part}' 失败(status={status})，降级到父层级")
-                if parent_uuid and parent_uuid not in toc_map.values():
-                    toc_map[cat_name] = parent_uuid  # 降级缓存
+                toc_map[cat_name] = parent_uuid  # 始终缓存，防止重复创建
                 return parent_uuid
-        # data 是数组，匹配 title 找到刚创建的节点
+        # 从响应中匹配刚创建的节点
         found = False
-        for item in result["data"]:
+        for item in result.get("data", []):
             if item.get("title") == part:
                 parent_uuid = item["uuid"]
                 found = True
                 break
         if not found:
             print(f"  ⚠️ 创建目录 '{part}' 后找不到节点，降级")
-            if parent_uuid and parent_uuid not in toc_map.values():
-                toc_map[cat_name] = parent_uuid
+            toc_map[cat_name] = parent_uuid  # 始终缓存，防止重复创建
             return parent_uuid
 
     toc_map[cat_name] = parent_uuid
