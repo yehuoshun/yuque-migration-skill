@@ -1,0 +1,45 @@
+name: Package Zip
+
+on:
+  push:
+    branches: [main]
+    tags:
+      - 'v*'
+  release:
+    types: [published]
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create zip
+        run: |
+          mkdir -p dist/yuque-migration-skill
+          cp -r SKILL.md scripts references README.md LICENSE config progress logs dist/yuque-migration-skill/
+          cd dist
+          zip -r yuque-migration-skill.zip yuque-migration-skill/
+          mv yuque-migration-skill.zip ../
+
+      - name: Upload to tagged release
+        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: yuque-migration-skill.zip
+
+      - name: Upload to latest release
+        if: github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: Latest Build
+          body: |
+            自动构建的最新版本。
+
+            📖 [SKILL.md 执行规范](https://github.com/yehuoshun/yuque-migration-skill/blob/main/SKILL.md)
+          files: yuque-migration-skill.zip
+          draft: false
+          prerelease: false

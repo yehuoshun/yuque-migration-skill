@@ -56,6 +56,16 @@
 
 ## 快速开始
 
+**方式一：下载 Zip（推荐）**
+
+```bash
+wget https://github.com/yehuoshun/yuque-migration-skill/releases/latest/download/yuque-migration-skill.zip
+unzip yuque-migration-skill.zip
+cd yuque-migration-skill
+```
+
+**方式二：Git Clone**
+
 ```bash
 git clone https://github.com/yehuoshun/yuque-migration-skill.git
 cd yuque-migration-skill
