@@ -6,7 +6,10 @@
 
 [![Release](https://img.shields.io/github/v/release/yehuoshun/yuque-migration-skill?label=release)](https://github.com/yehuoshun/yuque-migration-skill/releases)
 [![License](https://img.shields.io/github/license/yehuoshun/yuque-migration-skill)](./LICENSE)
-[![Python](https://img.shields.io/badge/python-3.8+-blue)](https://www.python.org/)
+[![Python](https://img.shields.io/badge/python-3.8+-blue)](https://www.python.org)
+[![SKILL.md](https://img.shields.io/badge/SKILL.md-执行规范-green)](./SKILL.md)
+
+📖 **AI Agent 执行规范 → [SKILL.md](./SKILL.md)**
 
 ## 目录
 
@@ -51,14 +54,18 @@
 
 ## 快速开始
 
-### 环境要求
+```bash
+git clone https://github.com/yehuoshun/yuque-migration-skill.git
+cd yuque-migration-skill
+```
 
-- Python 3.8+
-- 无外部依赖（纯标准库）
+### 1. 环境
 
-### 1. 创建配置文件
+- Python 3.8+，无外部依赖（纯标准库）
 
-默认路径 `config/yuque-config.json`（skill 目录下的 config 文件夹，可自定义）：
+### 2. 配置
+
+创建 `config/yuque-config.json`：
 
 ```json
 {
@@ -71,15 +78,18 @@
 }
 ```
 
-### 2. 运行迁移
+> Token 在[语雀开放平台](https://www.yuque.com/settings/tokens)创建，需 `doc:read` `doc:write` `repo:read` `repo:write` 权限。LLM 兼容 OpenAI Chat Completions API 的模型均可。
 
-由 AI Agent 驱动，用户说「将《xxx》内容整理到《yyy》」或「将《xxx》内容迁移到《yyy》」即可触发。
+### 3. 运行
 
-《xxx》/《yyy》可以是知识库名、ID、slug。若名称匹配多个同名知识库，Agent 会让用户选择。
-或直接使用脚本：
+**方式一：AI Agent 驱动**
+
+说「将《xxx》内容整理到《yyy》」即可。《xxx》/《yyy》可以是知识库名、ID、slug。
+
+**方式二：命令行**
 
 ```bash
-# 首次运行（需 AI Agent 先生成进度文件）
+# 首次运行（由 AI Agent 生成进度文件后执行）
 python scripts/migrate.py progress/12345_旧库名.json
 
 # 中断续传（直接重新运行同一命令）
