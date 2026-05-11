@@ -353,9 +353,52 @@ def _find_title_in_toc(nodes, target_title, parent_uuid):
             return found
     return None
 
+def _get_toc_cache(p):
+    """获取 TOC 树缓存，没有则拉取并写入 progress"""
+    global TARGET_ID
+    cache = p.setdefault("_toc_cache", {})
+    if cache.get("tree") is not None:
+        return cache["tree"]
+    toc_result, _, _ = api_get(f"/repos/{TARGET_ID}/toc")
+    tree = toc_result.get("data", []) if toc_result else []
+    cache["tree"] = tree
+    cache["fetched_at"] = datetime.now().isoformat()
+    return tree
+
+def _insert_to_toc_cache(p, parent_uuid, part, new_uuid):
+    """新创建的 TITLE 节点插入到 TOC 缓存树，避免重复拉取"""
+    cache = p.get("_toc_cache", {})
+    tree = cache.get("tree", [])
+    new_node = {"uuid": new_uuid, "title": part, "type": "TITLE",
+                "parent_uuid": parent_uuid, "children": []}
+    if parent_uuid is None or parent_uuid == "":
+        # 根级节点：追加到 tree 根列表
+        if isinstance(tree, list):
+            tree.append(new_node)
+    else:
+        # 找到父节点追加
+        _insert_child_to_node(tree, parent_uuid, new_node)
+    cache["tree"] = tree
+
+def _insert_child_to_node(nodes, target_uuid, child):
+    """递归在 nodes 中找到 target_uuid 并插入 child"""
+    if isinstance(nodes, dict):
+        nodes = [nodes]
+    if not isinstance(nodes, list):
+        return False
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        if node.get("uuid") == target_uuid:
+            node.setdefault("children", []).append(child)
+            return True
+        if _insert_child_to_node(node.get("children", []), target_uuid, child):
+            return True
+    return False
+
 def ensure_category(p, cat_name):
     """确保分类目录存在，返回最终层级的 uuid
-    先查后建：先从 TOC 树查找已有 TITLE，找不到才创建
+    先查后建：先从 TOC 缓存查找已有 TITLE，找不到才创建
     自动处理 / 分隔的层级路径（如 "技术/前端" → 建两级 TITLE）
     429 时等整点重试，失败降级返回父层级 uuid
     """
@@ -364,15 +407,14 @@ def ensure_category(p, cat_name):
     if cat_name in toc_map:
         return toc_map[cat_name]
 
-    # 拉取全量 TOC 树（每次确保最新，语雀 API 无增量查询）
-    toc_result, _, _ = api_get(f"/repos/{TARGET_ID}/toc")
-    toc_tree = toc_result.get("data", []) if toc_result else []
+    # 拉取全量 TOC 树（仅首次，后续走缓存）
+    toc_tree = _get_toc_cache(p)
 
     cat_parts = cat_name.split("/")
     parent_uuid = None
 
     for part in cat_parts:
-        # 1. 先查 TOC 树中是否已有同名 TITLE
+        # 1. 先查 TOC 缓存中是否已有同名 TITLE
         existing = _find_title_in_toc(toc_tree, part, parent_uuid)
         if existing:
             parent_uuid = existing
@@ -397,11 +439,12 @@ def ensure_category(p, cat_name):
                 print(f"  ⚠️ 创建目录 '{part}' 失败(status={status})，降级到父层级")
                 toc_map[cat_name] = parent_uuid  # 始终缓存，防止重复创建
                 return parent_uuid
-        # 从响应中匹配刚创建的节点
+        # 从响应中匹配刚创建的节点，并插入缓存
         found = False
         for item in result.get("data", []):
             if item.get("title") == part:
                 parent_uuid = item["uuid"]
+                _insert_to_toc_cache(p, item.get("parent_uuid"), part, parent_uuid)
                 found = True
                 break
         if not found:
