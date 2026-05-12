@@ -21,7 +21,6 @@ TARGET_NS = None
 BATCH_SIZE = 100
 MAX_WORKERS_INIT = 5
 MAX_WORKERS = 5
-DEDUP_CHUNKS = [200, 500]  # 去重逐级比较的字数
 
 
 # ── 内存感知 (K8s OOM 防杀) ──
@@ -150,11 +149,21 @@ def api_put(path, data, timeout=30):
 # ==================== 文档检测函数 ====================
 
 def is_binary(body):
-    if len(body) < 50: return False
-    sample = body[:1024]
-    if '\x00' in sample: return True
+    """二进制文档检测：\x00 铁定二进制；控制字符比例高+绝对量大且无可读文字才判二进制。"""
+    if len(body) < 50:
+        return False
+    sample = body[:4096]
+    if '\x00' in sample[:1024]:
+        return True
     control_chars = sum(1 for c in sample if ord(c) < 32 and c not in '\n\r\t')
-    return control_chars / max(len(sample), 1) > 0.30
+    ratio = control_chars / max(len(sample), 1)
+    if ratio > 0.30 and control_chars > 50:
+        # 二次确认：有可读文字就不是二进制（可能是编码损坏的文档）
+        readable = len(re.findall(r'[\u4e00-\u9fff\w]{4,}', sample))
+        if readable > 5:
+            return False
+        return True
+    return False
 
 def is_img_token(body):
     if not body: return False
@@ -198,11 +207,9 @@ def check_duplicate(p, title, body, dedup_lock):
         cache = p.setdefault("_created_title_cache", {})
         if title in cache:
             cached = cache[title]
-            body_c1 = normalize_for_compare(body[:DEDUP_CHUNKS[0]])
-            if body_c1 == cached.get("body_chunk0", ""):
+            if normalize_for_compare(body[:200]) == cached.get("body_200", ""):
                 return ("skip", cached["doc_id"])
-            body_c2 = normalize_for_compare(body[:DEDUP_CHUNKS[1]])
-            if body_c2 == cached.get("body_chunk1", ""):
+            if normalize_for_compare(body[:500]) == cached.get("body_500", ""):
                 return ("skip", cached["doc_id"])
             return ("conflict", cached["doc_id"])
 
@@ -225,18 +232,28 @@ def check_duplicate(p, title, body, dedup_lock):
             continue
         match_body = doc_result.get("data", {}).get("body", "")
 
-        # 逐级比较
-        for chunk_size in DEDUP_CHUNKS:
-            if normalize_for_compare(body[:chunk_size]) == normalize_for_compare(match_body[:chunk_size]):
-                with dedup_lock:
-                    cache = p.setdefault("_created_title_cache", {})
-                    if title not in cache:  # 二次检查防覆盖
-                        cache[title] = {
-                            "doc_id": match_id,
-                            "body_chunk0": normalize_for_compare(match_body[:DEDUP_CHUNKS[0]]),
-                            "body_chunk1": normalize_for_compare(match_body[:DEDUP_CHUNKS[1]])
-                        }
-                return ("skip", match_id)
+        # 逐级比较（200字→500字→全文，按 SKILL.md 规格）
+        if normalize_for_compare(body[:200]) == normalize_for_compare(match_body[:200]):
+            with dedup_lock:
+                cache = p.setdefault("_created_title_cache", {})
+                if title not in cache:
+                    cache[title] = {
+                        "doc_id": match_id,
+                        "body_200": normalize_for_compare(match_body[:200]),
+                        "body_500": normalize_for_compare(match_body[:500])
+                    }
+            return ("skip", match_id)
+
+        if normalize_for_compare(body[:500]) == normalize_for_compare(match_body[:500]):
+            with dedup_lock:
+                cache = p.setdefault("_created_title_cache", {})
+                if title not in cache:
+                    cache[title] = {
+                        "doc_id": match_id,
+                        "body_200": normalize_for_compare(match_body[:200]),
+                        "body_500": normalize_for_compare(match_body[:500])
+                    }
+            return ("skip", match_id)
 
         # 全文比较
         if normalize_for_compare(body) == normalize_for_compare(match_body):
@@ -245,8 +262,8 @@ def check_duplicate(p, title, body, dedup_lock):
                 if title not in cache:
                     cache[title] = {
                         "doc_id": match_id,
-                        "body_chunk0": normalize_for_compare(match_body[:DEDUP_CHUNKS[0]]),
-                        "body_chunk1": normalize_for_compare(match_body[:DEDUP_CHUNKS[1]])
+                        "body_200": normalize_for_compare(match_body[:200]),
+                        "body_500": normalize_for_compare(match_body[:500])
                     }
             return ("skip", match_id)
 
@@ -256,8 +273,8 @@ def check_duplicate(p, title, body, dedup_lock):
             if title not in cache:
                 cache[title] = {
                     "doc_id": match_id,
-                    "body_chunk0": normalize_for_compare(match_body[:DEDUP_CHUNKS[0]]),
-                    "body_chunk1": normalize_for_compare(match_body[:DEDUP_CHUNKS[1]])
+                    "body_200": normalize_for_compare(match_body[:200]),
+                    "body_500": normalize_for_compare(match_body[:500])
                 }
         return ("conflict", match_id)
 
@@ -873,8 +890,8 @@ def main():
             if final_title not in cache:  # 二次检查防覆盖
                 cache[final_title] = {
                     "doc_id": new_id,
-                    "body_chunk0": normalize_for_compare(cleaned[:DEDUP_CHUNKS[0]]),
-                    "body_chunk1": normalize_for_compare(cleaned[:DEDUP_CHUNKS[1]])
+                    "body_200": normalize_for_compare(cleaned[:200]),
+                    "body_500": normalize_for_compare(cleaned[:500])
                 }
 
         n_cats = len(categories)
