@@ -19,7 +19,11 @@ jobs:
       - name: Create zip
         run: |
           mkdir -p dist/yuque-migration-skill
-          cp -r SKILL.md scripts references README.md LICENSE config progress logs dist/yuque-migration-skill/
+          # 只打包运行必需文件，排除 README .github progress logs 等
+          cp -r SKILL.md scripts references dist/yuque-migration-skill/
+          # config 目录只带 .gitkeep 占位，不含真实凭据
+          mkdir -p dist/yuque-migration-skill/config
+          cp config/.gitkeep dist/yuque-migration-skill/config/
           cd dist
           zip -r yuque-migration-skill.zip yuque-migration-skill/
           mv yuque-migration-skill.zip ../
