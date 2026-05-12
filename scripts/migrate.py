@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""语雀知识库迁移脚本 v4
+"""语雀知识库迁移脚本 v5
+v5: 去重检测 + 重拟标题 + 容量初始计数 + 配置路径修正 + 代码清理 + LLM截断优化
 迁移即分类：LLM 清洗+分类合并为一次调用，逐篇处理立即挂目录，
 多分类自动复制文档，不再攒数据到后置 TOC 阶段。
 """
@@ -7,8 +8,9 @@
 import json, time, re, os, gc, urllib.request, urllib.error, urllib.parse
 from datetime import datetime, timedelta
 
-BASE = "https://www.yuque.com/api/v2"
-CONFIG_FILE = os.path.expanduser("~/.openclaw/workspace/utils/yuque/yuque-ai/yuque-config.json")
+# ── 配置路径：skill 目录下的 config/yuque-config.json ──
+SKILL_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+CONFIG_FILE = os.path.join(SKILL_DIR, "config", "yuque-config.json")
 
 # 运行时配置（从进度文件读取）
 PROGRESS_FILE = None
@@ -19,6 +21,8 @@ TARGET_NS = None
 BATCH_SIZE = 100
 MAX_WORKERS_INIT = 5
 MAX_WORKERS = 5
+DEDUP_CHUNKS = [200, 500]  # 去重逐级比较的字数
+
 
 # ── 内存感知 (K8s OOM 防杀) ──
 def _get_pod_mem_limit():
@@ -94,7 +98,7 @@ def http_req(method, path, data=None, timeout=30):
     req = urllib.request.Request(url, data=body_bytes, method=method)
     req.add_header("X-Auth-Token", TOKEN)
     req.add_header("Content-Type", "application/json")
-    req.add_header("User-Agent", "YuqueMigration/3.0")
+    req.add_header("User-Agent", "YuqueMigration/5.0")
 
     for attempt in range(3):
         try:
@@ -174,6 +178,84 @@ def fix_title(title, max_len=200):
     return title
 
 
+# ==================== 去重检测 ====================
+
+def normalize_for_compare(text):
+    """标准化文本用于比较：去除多余空白、统一换行"""
+    if not text: return ""
+    return re.sub(r'\s+', ' ', text.strip())
+
+def check_duplicate(p, title, body):
+    """检测目标库中是否已有同标题文档。
+
+    返回:
+        ("skip", matched_doc_id)  — 标题+内容相同，跳过
+        ("conflict", matched_doc_id) — 标题同内容不同，需要重拟标题
+        ("new", None)  — 没有冲突，正常创建
+    """
+    cache = p.setdefault("_created_title_cache", {})
+
+    # 1. 本地缓存命中
+    if title in cache:
+        cached = cache[title]
+        body_200 = normalize_for_compare(body[:200])
+        if body_200 == cached.get("body_200", ""):
+            return ("skip", cached["doc_id"])
+        body_500 = normalize_for_compare(body[:500])
+        if body_500 == cached.get("body_500", ""):
+            return ("skip", cached["doc_id"])
+        return ("conflict", cached["doc_id"])
+
+    # 2. 搜索目标库
+    result, status, _ = api_get("/search", {
+        "q": title[:200], "type": "doc", "scope": TARGET_NS
+    })
+    if result is None:
+        return ("new", None)  # 搜索失败，按新文档处理
+
+    matches = result.get("data", [])
+    for m in matches:
+        if m.get("title", "").strip() != title.strip():
+            continue
+        match_id = m["target"]["id"]
+
+        # 获取匹配文档内容
+        doc_result, doc_status, _ = api_get(
+            f"/repos/{TARGET_ID}/docs/{match_id}", {"raw": "1"}, timeout=30)
+        if doc_result is None:
+            continue
+        match_body = doc_result.get("data", {}).get("body", "")
+
+        # 逐级比较
+        for chunk_size in DEDUP_CHUNKS:
+            if normalize_for_compare(body[:chunk_size]) == normalize_for_compare(match_body[:chunk_size]):
+                cache[title] = {
+                    "doc_id": match_id,
+                    "body_200": normalize_for_compare(match_body[:200]),
+                    "body_500": normalize_for_compare(match_body[:500])
+                }
+                return ("skip", match_id)
+
+        # 全文比较
+        if normalize_for_compare(body) == normalize_for_compare(match_body):
+            cache[title] = {
+                "doc_id": match_id,
+                "body_200": normalize_for_compare(match_body[:200]),
+                "body_500": normalize_for_compare(match_body[:500])
+            }
+            return ("skip", match_id)
+
+        # 标题同内容不同 → 需重拟标题
+        cache[title] = {
+            "doc_id": match_id,
+            "body_200": normalize_for_compare(match_body[:200]),
+            "body_500": normalize_for_compare(match_body[:500])
+        }
+        return ("conflict", match_id)
+
+    return ("new", None)
+
+
 # ==================== 格式处理 ====================
 
 def fix_table_format(body):
@@ -198,52 +280,45 @@ def needs_llm_cleaning(body):
     )
 
     # ── 纯代码文档检测 ──
-    # 代码块包裹且内容是源代码特征
     code_wrapped = re.match(r'^```\w*\n', stripped)
     if code_wrapped:
         inner = re.sub(r'^```\w*\n|```$', '', stripped, flags=re.DOTALL).strip()
         if inner.startswith(code_indicators):
             return False
-        # 全代码块且没有自然语言段落
         non_code = re.sub(r'```[\s\S]*?```', '', stripped, flags=re.DOTALL).strip()
-        if len(non_code) < len(stripped) * 0.1:  # 代码占比 > 90%
+        if len(non_code) < len(stripped) * 0.1:
             return False
 
     # ── 纯代码文档检测（无代码块包裹） ──
     if stripped.startswith(code_indicators):
         return False
-    # JSON/XML/YAML 全量结构数据
     if re.match(r'^[\[{]\s*$', stripped.split('\n')[0].strip()):
         non_struct = re.sub(r'[\[\]{}:,"\'.\d\s\-]', '', stripped[:500])
-        if len(non_struct) < 20:  # 几乎没有自然语言
+        if len(non_struct) < 20:
             return False
 
     # ── 附件文档检测 ──
-    # 内容主要是文件链接/下载地址，缺少实质正文
     link_lines = re.findall(r'https?://[^\s<>"\']+\.(?:pdf|zip|rar|7z|tar\.gz|docx?|xlsx?|pptx?|apk|exe|dmg|pkg|jar|war|deb|rpm)',
                             stripped, re.IGNORECASE)
     if link_lines:
-        # 去链接后的有效正文
         no_links = re.sub(r'https?://[^\s<>"\'\n]+', '', stripped)
         no_links = re.sub(r'[\[\]\(\)\|\-\*#\s]', '', no_links)
-        if len(no_links) < 100:  # 去掉链接后几乎没有实质内容
+        if len(no_links) < 100:
             return False
 
     return True
 
-def llm_clean_and_classify(body, title, timeout=120):
-    """LLM清洗 + 分类合并调用
-    单次喂入上限 20000 字符，由 LLM 判断截断点。
-    返回: (cleaned_body, categories)
-    categories: ["分类1", "分类2/子分类", ...]
+
+def llm_clean_and_classify(body, title, need_new_title=False, timeout=120):
+    """LLM清洗 + 分类 + 重拟标题（合并一次调用）
+
+    返回: (cleaned_body, categories, new_title_or_None)
     """
     body = fix_table_format(body)
 
     if len(body) < 500 or not needs_llm_cleaning(body):
-        # 不调 LLM，默认未分类
-        return body, ["未分类"]
+        return body, ["未分类"], None
 
-    # ── 长文档截断：>20000 字符截取前 20000 送入 LLM ──
     MAX_CHARS = 20000
     truncated = False
     if len(body) > MAX_CHARS:
@@ -268,8 +343,8 @@ def llm_clean_and_classify(body, title, timeout=120):
 - 表格单元格内的竖线必须转义
 - 表格中不要使用 HTML 标签
 
-{"## 截断要求\n文档原文超过 " + str(MAX_CHARS) + " 字符，已截取前 " + str(MAX_CHARS) + " 字符发送。\n请在截断处附近选择一个完整的段落/章节边界作为结束点，输出到该边界为止的清洗后内容。\n如果截断点正好在代码块内部，请输出到该代码块结束后再停止。" if truncated else ""}
-
+{"## 截断要求\n已给你文档前 " + str(MAX_CHARS) + " 字符。请找到**你可见文本内最后一个**完整的段落/章节边界（如 ## 标题后、段落结束、代码块结束），输出到该边界为止。不要把输出结束在句子中间或代码块内部。" if truncated else ""}
+{"## 重拟标题要求\n⚠️ 特殊任务：此文档标题「" + title + "」在目标库中已存在同名文档，但内容不同，需要你根据文档内容生成一个新的、有区分度的标题。\n要求：新标题简洁（≤30字）、准确反映内容核心，避免与原标题重复。\n在输出末尾添加：<!-- NEW_TITLE: \"新标题\" -->" if need_new_title else ""}
 ## 分类要求
 阅读文档全文，判断它属于哪些主题分类（可多选）。
 - 分类名简洁（2-8个字），可用 / 表示层级（如 "Python/异步编程"）
@@ -303,6 +378,7 @@ def llm_clean_and_classify(body, title, timeout=120):
         with urllib.request.urlopen(llm_req, timeout=timeout) as resp:
             result = json.loads(resp.read().decode("utf-8"))
             raw = result["choices"][0]["message"]["content"]
+
             # 提取分类
             cat_match = re.search(r'<!--\s*CATEGORIES:\s*(\[[^\]]*\])', raw)
             categories = ["未分类"]
@@ -312,18 +388,27 @@ def llm_clean_and_classify(body, title, timeout=120):
                     if cats and isinstance(cats, list):
                         categories = cats
                 except: pass
-            # 移除分类标记行
-            cleaned = re.sub(r'\s*<!--\s*CATEGORIES:\s*\[[^\]]*\]\s*-->\s*$', '', raw).rstrip()
-            return fix_table_format(cleaned), categories
+
+            # 提取新标题（如果有）
+            new_title = None
+            title_match = re.search(r'<!--\s*NEW_TITLE:\s*"([^"]+)"', raw)
+            if title_match:
+                new_title = title_match.group(1).strip()
+
+            # 移除所有标记行
+            cleaned = re.sub(r'\s*<!--\s*(?:CATEGORIES:\s*\[[^\]]*\]|NEW_TITLE:\s*"[^"]+")\s*-->\s*', '', raw).rstrip()
+            return fix_table_format(cleaned), categories, new_title
     except Exception as e:
         print(f"  ⚠️ LLM异常: {e}，使用原始内容")
-        return body, ["未分类"]
-
+        return body, ["未分类"], None
 
 
 # ==================== 目录管理 ====================
 
 def wait_until_next_hour():
+    """等待到下一个整点。max(60, ...) 保证至少等 60 秒，
+    即使恰好在整点附近触发也不会因 reset 延迟而立即重试失败。
+    """
     now = datetime.now()
     next_hour = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
     wait_sec = max(60, (next_hour - now).total_seconds())
@@ -333,10 +418,6 @@ def wait_until_next_hour():
 
 
 def _find_title_in_toc(nodes, target_title, parent_uuid):
-    """在 TOC 树中查找匹配的 TITLE 节点
-    nodes: TOC 节点列表（dict 或 list）
-    返回 uuid 或 None
-    """
     if isinstance(nodes, dict):
         nodes = [nodes]
     if not isinstance(nodes, list):
@@ -354,7 +435,6 @@ def _find_title_in_toc(nodes, target_title, parent_uuid):
     return None
 
 def _get_toc_cache(p):
-    """获取 TOC 树缓存，没有则拉取并写入 progress"""
     global TARGET_ID
     cache = p.setdefault("_toc_cache", {})
     if cache.get("tree") is not None:
@@ -366,22 +446,18 @@ def _get_toc_cache(p):
     return tree
 
 def _insert_to_toc_cache(p, parent_uuid, part, new_uuid):
-    """新创建的 TITLE 节点插入到 TOC 缓存树，避免重复拉取"""
     cache = p.get("_toc_cache", {})
     tree = cache.get("tree", [])
     new_node = {"uuid": new_uuid, "title": part, "type": "TITLE",
                 "parent_uuid": parent_uuid, "children": []}
     if parent_uuid is None or parent_uuid == "":
-        # 根级节点：追加到 tree 根列表
         if isinstance(tree, list):
             tree.append(new_node)
     else:
-        # 找到父节点追加
         _insert_child_to_node(tree, parent_uuid, new_node)
     cache["tree"] = tree
 
 def _insert_child_to_node(nodes, target_uuid, child):
-    """递归在 nodes 中找到 target_uuid 并插入 child"""
     if isinstance(nodes, dict):
         nodes = [nodes]
     if not isinstance(nodes, list):
@@ -397,30 +473,21 @@ def _insert_child_to_node(nodes, target_uuid, child):
     return False
 
 def ensure_category(p, cat_name):
-    """确保分类目录存在，返回最终层级的 uuid
-    先查后建：先从 TOC 缓存查找已有 TITLE，找不到才创建
-    自动处理 / 分隔的层级路径（如 "技术/前端" → 建两级 TITLE）
-    429 时等整点重试，失败降级返回父层级 uuid
-    """
     global TARGET_ID
     toc_map = p.setdefault("toc_map", {})
     if cat_name in toc_map:
         return toc_map[cat_name]
 
-    # 拉取全量 TOC 树（仅首次，后续走缓存）
     toc_tree = _get_toc_cache(p)
-
     cat_parts = cat_name.split("/")
     parent_uuid = None
 
     for part in cat_parts:
-        # 1. 先查 TOC 缓存中是否已有同名 TITLE
         existing = _find_title_in_toc(toc_tree, part, parent_uuid)
         if existing:
             parent_uuid = existing
             continue
 
-        # 2. 不存在则创建
         result, status, _ = api_put(f"/repos/{TARGET_ID}/toc", {
             "action": "appendNode",
             "action_mode": "child",
@@ -437,9 +504,8 @@ def ensure_category(p, cat_name):
                 })
             if result is None:
                 print(f"  ⚠️ 创建目录 '{part}' 失败(status={status})，降级到父层级")
-                toc_map[cat_name] = parent_uuid  # 始终缓存，防止重复创建
+                toc_map[cat_name] = parent_uuid
                 return parent_uuid
-        # 从响应中匹配刚创建的节点，并插入缓存
         found = False
         for item in result.get("data", []):
             if item.get("title") == part:
@@ -449,7 +515,7 @@ def ensure_category(p, cat_name):
                 break
         if not found:
             print(f"  ⚠️ 创建目录 '{part}' 后找不到节点，降级")
-            toc_map[cat_name] = parent_uuid  # 始终缓存，防止重复创建
+            toc_map[cat_name] = parent_uuid
             return parent_uuid
 
     toc_map[cat_name] = parent_uuid
@@ -457,7 +523,6 @@ def ensure_category(p, cat_name):
 
 
 def mount_docs_to_uuid(p, doc_ids, uuid, cat_name):
-    """批量挂文档到指定 uuid，429 等整点重试，失败记 orphans"""
     for j in range(0, len(doc_ids), 50):
         batch = doc_ids[j:j+50]
         result, status, _ = api_put(f"/repos/{TARGET_ID}/toc", {
@@ -489,10 +554,6 @@ def mount_docs_to_uuid(p, doc_ids, uuid, cat_name):
 
 
 def mount_docs_to_categories(p, doc_ids, part_bodies, categories):
-    """将文档挂载到所有分类目录。
-    主分类（第一个）挂原始 doc_ids，
-    其余分类复制文档后挂副本 doc_ids。
-    """
     if not categories:
         categories = ["未分类"]
 
@@ -501,7 +562,6 @@ def mount_docs_to_categories(p, doc_ids, part_bodies, categories):
 
     for i, cat_name in enumerate(categories):
         if i == 0:
-            # 主分类：直接挂原始 doc_ids
             uuid = ensure_category(p, cat_name)
             if uuid:
                 mount_docs_to_uuid(p, doc_ids, uuid, cat_name)
@@ -512,7 +572,6 @@ def mount_docs_to_categories(p, doc_ids, part_bodies, categories):
                         "doc_id": d, "reason": f"目录'{cat_name}'创建失败"
                     })
         else:
-            # 额外分类：复制文档 → 挂副本
             copied_ids = []
             for ptitle, pbody in part_bodies:
                 result, status, _ = api_post(f"/repos/{TARGET_ID}/docs", {
@@ -545,130 +604,6 @@ def mount_docs_to_categories(p, doc_ids, part_bodies, categories):
                         })
 
 
-# ==================== 核心处理 ====================
-
-def _process_body(doc, p, result, status, headers):
-    """处理已获取的文档 body（核心逻辑，供 process_doc 和 process_doc_with_body 共用）"""
-    global TARGET_ID, SOURCE_ID
-    doc_id = doc["id"]
-    orig_title = doc["title"]
-    title = fix_title(orig_title)
-
-    # ── 获取失败处理 ──
-    if result is None:
-        if status == 404:
-            p.setdefault("skipped_empty", []).append({"doc_id": doc_id, "title": title})
-            p["skipped"] = p.get("skipped", 0) + 1
-            return "empty_404"
-        if status == 429:
-            return "rate_limit"
-        p.setdefault("failed_list", []).append(
-            {"id": doc_id, "title": title, "reason": f"获取失败: {status}"})
-        p["failed"] = p.get("failed", 0) + 1
-        return "fetch_error"
-
-    data = result.get("data", {})
-    fmt = data.get("format", "markdown")
-    body = data.get("body", "")
-
-    # ── Lake 格式无损搬运 ──
-    if fmt == "lake":
-        body_lake = data.get("body_lake", body)
-        result2, status2, _ = api_post(f"/repos/{TARGET_ID}/docs", {
-            "title": title, "body": body_lake, "format": "lake"
-        }, timeout=60)
-        if result2 is None:
-            if status2 == 429: return "rate_limit"
-            p.setdefault("failed_list", []).append(
-                {"id": doc_id, "title": title, "reason": f"lake创建失败: {status2}"})
-            p["failed"] = p.get("failed", 0) + 1
-            return "lake_failed"
-        new_id = result2["data"]["id"]
-        p.setdefault("lake_docs", []).append(
-            {"doc_id": doc_id, "new_id": new_id, "title": title, "reason": "lake格式无损搬运"})
-        p["created_doc_mapping"][str(doc_id)] = new_id
-        p["created"] = p.get("created", 0) + 1
-        p["local_created"] = p.get("local_created", 0) + 1
-        # Lake 无法 LLM 清洗，归入"未分类"
-        mount_docs_to_categories(p, [new_id], [(title, body_lake)], ["未分类"])
-        return "lake_created"
-
-    # ── 格式过滤 ──
-    UNSUPPORTED_FORMATS = {"doc", "docx", "pdf", "image", "png", "jpg", "jpeg",
-                           "gif", "ppt", "pptx", "xls", "xlsx", "zip", "rar"}
-    if fmt in UNSUPPORTED_FORMATS:
-        p.setdefault("skipped_unsupported", []).append(
-            {"doc_id": doc_id, "title": title, "format": fmt, "reason": "不支持的文件格式"})
-        p["skipped"] = p.get("skipped", 0) + 1
-        return f"skipped_format_{fmt}"
-    if fmt not in ("markdown", "lake"):
-        p.setdefault("failed_list", []).append(
-            {"id": doc_id, "title": title, "reason": f"未知格式: {fmt}"})
-        p["failed"] = p.get("failed", 0) + 1
-        return f"unknown_format_{fmt}"
-
-    if not body or not body.strip():
-        p.setdefault("skipped_empty", []).append({"doc_id": doc_id, "title": title})
-        p["skipped"] = p.get("skipped", 0) + 1
-        return "empty"
-
-    if is_img_token(body):
-        p.setdefault("skipped_img_token", []).append(
-            {"doc_id": doc_id, "title": title, "reason": "图片token文档"})
-        p["skipped"] = p.get("skipped", 0) + 1
-        return "skipped_img_token"
-
-    if is_meaningless_doc(orig_title, body):
-        p.setdefault("skipped_meaningless", []).append(
-            {"doc_id": doc_id, "title": title, "reason": "无意义文档"})
-        p["skipped"] = p.get("skipped", 0) + 1
-        return "skipped_meaningless"
-
-    if is_binary(body):
-        p.setdefault("skipped_binary", []).append({"doc_id": doc_id, "title": title})
-        p["skipped"] = p.get("skipped", 0) + 1
-        return "binary"
-
-    # ── LLM 清洗 + 分类（一次调用，含长文档截断） ──
-    cleaned, categories = llm_clean_and_classify(body, title)
-
-    # ── 创建文档 ──
-    result2, status2, _ = api_post(f"/repos/{TARGET_ID}/docs", {
-        "title": title, "body": cleaned, "format": "markdown"
-    }, timeout=60)
-    if result2 is None:
-        if status2 == 429: return "rate_limit"
-        p.setdefault("failed_list", []).append(
-            {"id": doc_id, "title": title, "reason": f"创建失败: {status2}"})
-        p["failed"] = p.get("failed", 0) + 1
-        return "create_failed"
-    new_id = result2["data"]["id"]
-    p["created_doc_mapping"][str(doc_id)] = new_id
-    p["created"] = p.get("created", 0) + 1
-    p["local_created"] = p.get("local_created", 0) + 1
-
-    # ── 挂目录（主分类 + 额外分类复制） ──
-    mount_docs_to_categories(p, [new_id], [(title, cleaned)], categories)
-
-    n_cats = len(categories)
-    suffix = f"_cats{n_cats}" if n_cats > 1 else ""
-    return f"created{suffix}"
-
-
-def process_doc(doc, p):
-    """处理单篇文档：获取 body → 清洗分类 → 创建挂目录"""
-    global SOURCE_ID
-    result, status, headers = api_get(
-        f"/repos/{SOURCE_ID}/docs/{doc['id']}", {"raw": "1"}, timeout=90)
-    return _process_body(doc, p, result, status, headers)
-
-
-def process_doc_with_body(doc, p, body_result):
-    """使用预取的 body 结果处理文档（跳过 GET 请求）"""
-    result, status, headers = body_result
-    return _process_body(doc, p, result, status, headers)
-
-
 # ==================== 主流程 ====================
 
 def main():
@@ -680,14 +615,16 @@ def main():
 
     if len(sys.argv) < 2:
         print("用法: python migrate.py <进度文件路径>", file=sys.stderr)
-        print("进度文件位于 utils/yuque-migration/progress/", file=sys.stderr)
+        print("进度文件位于 progress/", file=sys.stderr)
         sys.exit(1)
-    PROGRESS_FILE = os.path.expanduser(sys.argv[1])
+    PROGRESS_FILE = sys.argv[1]
+    if not os.path.isabs(PROGRESS_FILE):
+        PROGRESS_FILE = os.path.join(SKILL_DIR, PROGRESS_FILE)
     if not os.path.exists(PROGRESS_FILE):
         print(f"❌ 进度文件不存在: {PROGRESS_FILE}", file=sys.stderr)
         sys.exit(1)
 
-    # ── 进程锁：防止重复启动 ──
+    # ── 进程锁 ──
     LOCK_FILE = PROGRESS_FILE + ".lock"
     my_pid = os.getpid()
     if os.path.exists(LOCK_FILE):
@@ -695,15 +632,13 @@ def main():
             with open(LOCK_FILE) as lf:
                 old_pid = int(lf.read().strip())
             if old_pid == my_pid:
-                pass  # 同一进程重入，允许
+                pass
             else:
-                # 检查旧进程是否还活着
                 try:
                     os.kill(old_pid, 0)
                     print(f"❌ 已有迁移任务在运行 (PID={old_pid})，拒绝重复启动", file=sys.stderr)
                     sys.exit(1)
                 except OSError:
-                    # 旧进程已死，覆盖锁
                     print(f"⚠️ 旧锁文件 (PID={old_pid}) 对应进程已退出，覆盖", file=sys.stderr)
         except (ValueError, FileNotFoundError):
             pass
@@ -727,10 +662,23 @@ def main():
 
     offset = p["last_offset"]
     total = p["total_docs"]
+
+    # ── 容量追踪：获取目标库初始文档数 ──
+    if "initial_count" not in p:
+        repo_result, _, _ = api_get(f"/repos/{TARGET_ID}")
+        if repo_result:
+            p["initial_count"] = repo_result.get("data", {}).get("items_count", 0)
+        else:
+            p["initial_count"] = 0
+        save_progress(p)
+    initial_count = p["initial_count"]
+    local_created = p.get("local_created", 0)
+    current_total = initial_count + local_created
+
     print(f"📦 续传: offset={offset}, 已创建={p['created']}, 跳过={p['skipped']}, 失败={p['failed']}")
     print(f"   源库: {p['source_name']} ({SOURCE_ID})")
     print(f"   目标库: {p['target_name']} ({TARGET_ID})")
-    print(f"   目标库累计: {p.get('local_created', 0)}/4500", flush=True)
+    print(f"   目标库容量: 初始{initial_count} + 本次{local_created} = {current_total}/5000", flush=True)
     if POD_LIMIT_B:
         print(f"   容器内存上限: {POD_LIMIT_B/1024/1024:.0f}MB, 安全水位: {SAFE_LIMIT_MB:.0f}MB")
     else:
@@ -739,29 +687,25 @@ def main():
     print(f"   RSS={rss:.0f}MB" if rss else "", flush=True)
 
     # ── 线程安全锁 ──
-    p_lock = Lock()       # 保护 progress dict 的读写
-    toc_lock = Lock()     # 保护 TOC 目录树操作
-    
+    p_lock = Lock()
+    toc_lock = Lock()
+
     FATAL_RESULTS = {"fetch_error", "create_failed", "lake_failed", "error"}
     consecutive_errors = 0
     error_lock = Lock()
 
     def process_one_doc(doc):
-        """线程安全的单文档处理：获取 → 清洗 → 创建 → 挂目录
-        在独立线程中运行，LLM 调用不加锁（真正的并行），
-        仅创建文档和挂目录时使用 p_lock / toc_lock 保护共享状态。
-        """
         nonlocal consecutive_errors
         doc_id = doc["id"]
         short_title = doc["title"][:60]
         orig_title = doc["title"]
         title = fix_title(orig_title)
 
-        # ── 阶段 1：获取 body（无锁，各线程独立） ──
+        # ── 阶段 1：获取 body ──
         result, status, headers = api_get(
             f"/repos/{SOURCE_ID}/docs/{doc_id}", {"raw": "1"}, timeout=90)
 
-        # ── 阶段 2：格式检查 + Lake 判断（只读，无锁） ──
+        # ── 阶段 2：格式检查 ──
         if result is None:
             if status == 404:
                 with p_lock:
@@ -784,7 +728,7 @@ def main():
         fmt = data.get("format", "markdown")
         body = data.get("body", "")
 
-        # Lake 无损搬运
+        # ── Lake 无损搬运 ──
         if fmt == "lake":
             body_lake = data.get("body_lake", body)
             result2, status2, _ = api_post(f"/repos/{TARGET_ID}/docs", {
@@ -808,7 +752,7 @@ def main():
                     p["created"] = p.get("created", 0) + 1
                     p["local_created"] = p.get("local_created", 0) + 1
                     p.setdefault("processed_doc_ids", []).append(doc_id)
-                    original_mount(p, [new_id], [(title, body_lake)], ["未分类"])
+                    mount_docs_to_categories(p, [new_id], [(title, body_lake)], ["未分类"])
             print(f"  🔄 [{doc_id}] {short_title}... lake_created", flush=True)
             return "lake_created"
 
@@ -832,7 +776,7 @@ def main():
             print(f"  🔄 [{doc_id}] {short_title}... unknown_format_{fmt}", flush=True)
             return f"unknown_format_{fmt}"
 
-        # 空文档 / 无意义 / 二进制检测
+        # 空文档 / 无意义 / 二进制
         if not body or not body.strip():
             with p_lock:
                 p.setdefault("skipped_empty", []).append({"doc_id": doc_id, "title": title})
@@ -864,23 +808,47 @@ def main():
             print(f"  🔄 [{doc_id}] {short_title}... binary", flush=True)
             return "binary"
 
-        # ── 阶段 3：LLM 清洗 + 分类（无锁！真正的并行瓶颈在此突破） ──
-        cleaned, categories = llm_clean_and_classify(body, title)
+        # ── 阶段 2.5：去重检测 ──
+        dup_result, dup_matched = check_duplicate(p, title, body)
+        if dup_result == "skip":
+            with p_lock:
+                p.setdefault("skipped_duplicates", []).append(
+                    {"doc_id": doc_id, "title": title, "matched": dup_matched})
+                p["skipped"] = p.get("skipped", 0) + 1
+                p.setdefault("processed_doc_ids", []).append(doc_id)
+            print(f"  🔄 [{doc_id}] {short_title}... dup_same(→{dup_matched})", flush=True)
+            return "dup_same"
+        need_new_title = (dup_result == "conflict")
 
-        # ── 阶段 4：创建文档 + 挂目录（p_lock + toc_lock） ──
+        # ── 阶段 3：LLM 清洗 + 分类 + 重拟标题 ──
+        cleaned, categories, new_title = llm_clean_and_classify(body, title, need_new_title)
+        final_title = new_title if new_title else title
+        if need_new_title and new_title:
+            final_title = f"{title}（{new_title}）"
+
+        # ── 阶段 4：创建文档 + 挂目录 ──
         result2, status2, _ = api_post(f"/repos/{TARGET_ID}/docs", {
-            "title": title, "body": cleaned, "format": "markdown"
+            "title": final_title, "body": cleaned, "format": "markdown"
         }, timeout=60)
         if result2 is None:
             if status2 == 429: return "rate_limit"
             with p_lock:
                 p.setdefault("failed_list", []).append(
-                    {"id": doc_id, "title": title, "reason": f"创建失败: {status2}"})
+                    {"id": doc_id, "title": final_title, "reason": f"创建失败: {status2}"})
                 p["failed"] = p.get("failed", 0) + 1
                 p.setdefault("processed_doc_ids", []).append(doc_id)
             print(f"  🔄 [{doc_id}] {short_title}... create_failed", flush=True)
             return "create_failed"
         new_id = result2["data"]["id"]
+
+        # 去重缓存更新
+        with p_lock:
+            cache = p.setdefault("_created_title_cache", {})
+            cache[final_title] = {
+                "doc_id": new_id,
+                "body_200": normalize_for_compare(cleaned[:200]),
+                "body_500": normalize_for_compare(cleaned[:500])
+            }
 
         n_cats = len(categories)
         with toc_lock:
@@ -889,13 +857,14 @@ def main():
                 p["created"] = p.get("created", 0) + 1
                 p["local_created"] = p.get("local_created", 0) + 1
                 p.setdefault("processed_doc_ids", []).append(doc_id)
-                original_mount(p, [new_id], [(title, cleaned)], categories)
+                mount_docs_to_categories(p, [new_id], [(final_title, cleaned)], categories)
 
-        suffix = f"_cats{n_cats}" if n_cats > 1 else ""
+        suffix = f"_cats{n_cats}"
+        if need_new_title:
+            suffix += "_renamed"
         res = f"created{suffix}"
         print(f"  🔄 [{doc_id}] {short_title}... {res}", flush=True)
 
-        # ── 错误计数 ──
         with error_lock:
             if res in FATAL_RESULTS or res.startswith("unknown_format_"):
                 consecutive_errors += 1
@@ -904,21 +873,12 @@ def main():
 
         return res
 
-    # ── 并行的 _process_body 需要访问 TOC 锁 ──
-    # 修改 _process_body 中 mount_docs_to_categories 调用，改用带锁版本
-    original_mount = mount_docs_to_categories
-    def mount_docs_to_categories_locked(p, doc_ids, part_bodies, categories):
-        with toc_lock:
-            return original_mount(p, doc_ids, part_bodies, categories)
-
-    # 替换模块级函数引用，让 _process_body 走带 TOC 锁的版本
-    globals()['mount_docs_to_categories'] = mount_docs_to_categories_locked
-
     print(f"  🧵 并发数: {MAX_WORKERS}", flush=True)
 
     while offset < total:
-        if p.get("local_created", 0) >= 4500:
-            print(f"\n⚠️ 目标库已达切换阈值 4500 篇！已迁移 {p['local_created']} 篇。", flush=True)
+        current_total = initial_count + p.get("local_created", 0)
+        if current_total >= 4500:
+            print(f"\n⚠️ 目标库已达切换阈值（初始{initial_count}+已迁{p['local_created']}={current_total}≥4500）！", flush=True)
             save_progress(p)
             return
 
@@ -948,10 +908,8 @@ def main():
             save_progress(p)
             continue
 
-        # ── 内存感知并发控制 ──
         _check_memory()
 
-        # ── 并行处理本批所有待处理文档 ──
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
             futures = {executor.submit(process_one_doc, doc): doc for doc in pending}
             for future in as_completed(futures):
@@ -966,7 +924,6 @@ def main():
                         p["failed"] = p.get("failed", 0) + 1
                         p.setdefault("processed_doc_ids", []).append(doc["id"])
 
-            # 连续错误检查
             if consecutive_errors > 10:
                 print(f"\n❌ 连续 {consecutive_errors} 次致命错误，暂停。", flush=True)
                 save_progress(p)
@@ -976,7 +933,6 @@ def main():
             save_progress(p)
             time.sleep(0.1)
 
-        # ── 本批完成，更新 offset ──
         with p_lock:
             all_done = all(d["id"] in p.get("processed_doc_ids", []) for d in docs)
             if all_done:
@@ -987,13 +943,16 @@ def main():
                 p["last_offset"] = offset
 
         save_progress(p)
+        current_total = initial_count + p.get("local_created", 0)
         print(f"  📊 {offset}/{total} ({offset*100//total}%), "
-              f"创={p['created']} 跳={p['skipped']} 败={p['failed']}", flush=True)
+              f"创={p['created']} 跳={p['skipped']} 败={p['failed']} "
+              f"容量={current_total}/5000", flush=True)
 
     # 汇报
     copies = p.get("multi_category_copies", 0)
+    dup_count = len(p.get("skipped_duplicates", []))
     print(f"\n✅ 迁移完成！创={p['created']}(含多目录副本{copies}篇) "
-          f"跳={p['skipped']} 败={p['failed']}", flush=True)
+          f"跳={p['skipped']}(含去重{dup_count}篇) 败={p['failed']}", flush=True)
     cats = len(p.get("toc_map", {}))
     if cats:
         print(f"📂 已建 {cats} 个目录", flush=True)
