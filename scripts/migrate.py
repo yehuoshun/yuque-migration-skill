@@ -920,7 +920,6 @@ def main():
         _check_memory()
 
         # ── 并行处理本批所有待处理文档 ──
-        batch_processed = 0
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
             futures = {executor.submit(process_one_doc, doc): doc for doc in pending}
             for future in as_completed(futures):
@@ -934,10 +933,6 @@ def main():
                             {"id": doc["id"], "title": doc["title"], "reason": f"线程异常: {e}"})
                         p["failed"] = p.get("failed", 0) + 1
                         p.setdefault("processed_doc_ids", []).append(doc["id"])
-                batch_processed += 1
-                # 每处理一篇就保存进度（防止"假卡死"）
-                if batch_processed % 5 == 0 or batch_processed == len(pending):
-                    save_progress(p)
 
             # 连续错误检查
             if consecutive_errors > 10:
