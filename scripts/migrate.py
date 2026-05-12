@@ -195,23 +195,25 @@ def check_duplicate(p, title, body):
     """
     cache = p.setdefault("_created_title_cache", {})
 
-    # 1. 本地缓存命中
-    if title in cache:
-        cached = cache[title]
-        body_200 = normalize_for_compare(body[:200])
-        if body_200 == cached.get("body_200", ""):
-            return ("skip", cached["doc_id"])
-        body_500 = normalize_for_compare(body[:500])
-        if body_500 == cached.get("body_500", ""):
-            return ("skip", cached["doc_id"])
-        return ("conflict", cached["doc_id"])
+    # 1. 本地缓存命中（持锁）
+    with dedup_lock:
+        cache = p.setdefault("_created_title_cache", {})
+        if title in cache:
+            cached = cache[title]
+            body_200 = normalize_for_compare(body[:200])
+            if body_200 == cached.get("body_200", ""):
+                return ("skip", cached["doc_id"])
+            body_500 = normalize_for_compare(body[:500])
+            if body_500 == cached.get("body_500", ""):
+                return ("skip", cached["doc_id"])
+            return ("conflict", cached["doc_id"])
 
-    # 2. 搜索目标库
+    # 2. 搜索目标库（无锁，不阻塞其他线程查缓存）
     result, status, _ = api_get("/search", {
         "q": title[:200], "type": "doc", "scope": TARGET_NS
     })
     if result is None:
-        return ("new", None)  # 搜索失败，按新文档处理
+        return ("new", None)
 
     matches = result.get("data", [])
     for m in matches:
@@ -219,7 +221,6 @@ def check_duplicate(p, title, body):
             continue
         match_id = m["target"]["id"]
 
-        # 获取匹配文档内容
         doc_result, doc_status, _ = api_get(
             f"/repos/{TARGET_ID}/docs/{match_id}", {"raw": "1"}, timeout=30)
         if doc_result is None:
@@ -229,28 +230,37 @@ def check_duplicate(p, title, body):
         # 逐级比较
         for chunk_size in DEDUP_CHUNKS:
             if normalize_for_compare(body[:chunk_size]) == normalize_for_compare(match_body[:chunk_size]):
+                with dedup_lock:
+                    cache = p.setdefault("_created_title_cache", {})
+                    if title not in cache:  # 二次检查防覆盖
+                        cache[title] = {
+                            "doc_id": match_id,
+                            "body_200": normalize_for_compare(match_body[:200]),
+                            "body_500": normalize_for_compare(match_body[:500])
+                        }
+                return ("skip", match_id)
+
+        # 全文比较
+        if normalize_for_compare(body) == normalize_for_compare(match_body):
+            with dedup_lock:
+                cache = p.setdefault("_created_title_cache", {})
+                if title not in cache:
+                    cache[title] = {
+                        "doc_id": match_id,
+                        "body_200": normalize_for_compare(match_body[:200]),
+                        "body_500": normalize_for_compare(match_body[:500])
+                    }
+            return ("skip", match_id)
+
+        # 标题同内容不同 → 需重拟标题
+        with dedup_lock:
+            cache = p.setdefault("_created_title_cache", {})
+            if title not in cache:
                 cache[title] = {
                     "doc_id": match_id,
                     "body_200": normalize_for_compare(match_body[:200]),
                     "body_500": normalize_for_compare(match_body[:500])
                 }
-                return ("skip", match_id)
-
-        # 全文比较
-        if normalize_for_compare(body) == normalize_for_compare(match_body):
-            cache[title] = {
-                "doc_id": match_id,
-                "body_200": normalize_for_compare(match_body[:200]),
-                "body_500": normalize_for_compare(match_body[:500])
-            }
-            return ("skip", match_id)
-
-        # 标题同内容不同 → 需重拟标题
-        cache[title] = {
-            "doc_id": match_id,
-            "body_200": normalize_for_compare(match_body[:200]),
-            "body_500": normalize_for_compare(match_body[:500])
-        }
         return ("conflict", match_id)
 
     return ("new", None)
@@ -553,7 +563,7 @@ def mount_docs_to_uuid(p, doc_ids, uuid, cat_name):
             print(f"  ✅ '{cat_name}' 挂载 {len(batch)} 篇", flush=True)
 
 
-def mount_docs_to_categories(p, doc_ids, part_bodies, categories):
+def mount_docs_to_categories(p, doc_ids, part_bodies, categories, p_lock=None):
     if not categories:
         categories = ["未分类"]
 
@@ -591,9 +601,15 @@ def mount_docs_to_categories(p, doc_ids, part_bodies, categories):
                 copied_ids.append(result["data"]["id"])
 
             if copied_ids:
-                p["created"] = p.get("created", 0) + len(copied_ids)
-                p["local_created"] = p.get("local_created", 0) + len(copied_ids)
-                p["multi_category_copies"] += len(copied_ids)
+                if p_lock:
+                    with p_lock:
+                        p["created"] = p.get("created", 0) + len(copied_ids)
+                        p["local_created"] = p.get("local_created", 0) + len(copied_ids)
+                        p["multi_category_copies"] += len(copied_ids)
+                else:
+                    p["created"] = p.get("created", 0) + len(copied_ids)
+                    p["local_created"] = p.get("local_created", 0) + len(copied_ids)
+                    p["multi_category_copies"] += len(copied_ids)
                 uuid = ensure_category(p, cat_name)
                 if uuid:
                     mount_docs_to_uuid(p, copied_ids, uuid, cat_name)
@@ -689,6 +705,7 @@ def main():
     # ── 线程安全锁 ──
     p_lock = Lock()
     toc_lock = Lock()
+    dedup_lock = Lock()  # 保护 _created_title_cache 读写
 
     FATAL_RESULTS = {"fetch_error", "create_failed", "lake_failed", "error"}
     consecutive_errors = 0
@@ -752,7 +769,7 @@ def main():
                     p["created"] = p.get("created", 0) + 1
                     p["local_created"] = p.get("local_created", 0) + 1
                     p.setdefault("processed_doc_ids", []).append(doc_id)
-                    mount_docs_to_categories(p, [new_id], [(title, body_lake)], ["未分类"])
+                    mount_docs_to_categories(p, [new_id], [(title, body_lake)], ["未分类"], p_lock)
             print(f"  🔄 [{doc_id}] {short_title}... lake_created", flush=True)
             return "lake_created"
 
@@ -825,6 +842,9 @@ def main():
         final_title = new_title if new_title else title
         if need_new_title and new_title:
             final_title = f"{title}（{new_title}）"
+        elif need_new_title and not new_title:
+            # LLM 未生成新标题，加时间戳后缀防冲突
+            final_title = f"{title}（{int(time.time()) % 100000}）"
 
         # ── 阶段 4：创建文档 + 挂目录 ──
         result2, status2, _ = api_post(f"/repos/{TARGET_ID}/docs", {
@@ -841,23 +861,27 @@ def main():
             return "create_failed"
         new_id = result2["data"]["id"]
 
-        # 去重缓存更新
-        with p_lock:
+        # 去重缓存更新（dedup_lock，与 check_duplicate 共用同一把锁）
+        with dedup_lock:
             cache = p.setdefault("_created_title_cache", {})
-            cache[final_title] = {
-                "doc_id": new_id,
-                "body_200": normalize_for_compare(cleaned[:200]),
-                "body_500": normalize_for_compare(cleaned[:500])
-            }
+            if final_title not in cache:  # 二次检查防覆盖
+                cache[final_title] = {
+                    "doc_id": new_id,
+                    "body_200": normalize_for_compare(cleaned[:200]),
+                    "body_500": normalize_for_compare(cleaned[:500])
+                }
 
         n_cats = len(categories)
+        # 先更新进度（p_lock 毫秒级，不包含 IO）
+        with p_lock:
+            p["created_doc_mapping"][str(doc_id)] = new_id
+            p["created"] = p.get("created", 0) + 1
+            p["local_created"] = p.get("local_created", 0) + 1
+            p.setdefault("processed_doc_ids", []).append(doc_id)
+
+        # 再挂目录（只持 toc_lock，p_lock 已释放，不阻塞其他线程更新进度）
         with toc_lock:
-            with p_lock:
-                p["created_doc_mapping"][str(doc_id)] = new_id
-                p["created"] = p.get("created", 0) + 1
-                p["local_created"] = p.get("local_created", 0) + 1
-                p.setdefault("processed_doc_ids", []).append(doc_id)
-                mount_docs_to_categories(p, [new_id], [(final_title, cleaned)], categories)
+            mount_docs_to_categories(p, [new_id], [(final_title, cleaned)], categories, p_lock)
 
         suffix = f"_cats{n_cats}"
         if need_new_title:
