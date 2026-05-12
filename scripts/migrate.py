@@ -687,6 +687,38 @@ def main():
         print(f"❌ 进度文件不存在: {PROGRESS_FILE}", file=sys.stderr)
         sys.exit(1)
 
+    # ── 进程锁：防止重复启动 ──
+    LOCK_FILE = PROGRESS_FILE + ".lock"
+    my_pid = os.getpid()
+    if os.path.exists(LOCK_FILE):
+        try:
+            with open(LOCK_FILE) as lf:
+                old_pid = int(lf.read().strip())
+            if old_pid == my_pid:
+                pass  # 同一进程重入，允许
+            else:
+                # 检查旧进程是否还活着
+                try:
+                    os.kill(old_pid, 0)
+                    print(f"❌ 已有迁移任务在运行 (PID={old_pid})，拒绝重复启动", file=sys.stderr)
+                    sys.exit(1)
+                except OSError:
+                    # 旧进程已死，覆盖锁
+                    print(f"⚠️ 旧锁文件 (PID={old_pid}) 对应进程已退出，覆盖", file=sys.stderr)
+        except (ValueError, FileNotFoundError):
+            pass
+    with open(LOCK_FILE, 'w') as lf:
+        lf.write(str(my_pid))
+    import atexit
+    def _clean_lock():
+        try:
+            with open(LOCK_FILE) as lf:
+                if int(lf.read().strip()) == my_pid:
+                    os.remove(LOCK_FILE)
+        except:
+            pass
+    atexit.register(_clean_lock)
+
     print(f"📋 进度文件: {PROGRESS_FILE}")
     p = load_progress()
     SOURCE_ID = p["source_book_id"]
