@@ -1,0 +1,8 @@
+{
+  "token": "你的语雀 API Token",
+  "llm": {
+    "model": "deepseek-chat",
+    "url": "https://api.deepseek.com/v1/chat/completions",
+    "api_key": "sk-你的APIKey"
+  }
+}

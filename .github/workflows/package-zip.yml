@@ -21,9 +21,9 @@ jobs:
           mkdir -p dist/yuque-migration-skill
           # 只打包运行必需文件，排除 README .github progress logs 等
           cp -r SKILL.md scripts references dist/yuque-migration-skill/
-          # config 目录只带 .gitkeep 占位，不含真实凭据
+          # config 目录带模板（不含真实凭据）
           mkdir -p dist/yuque-migration-skill/config
-          cp config/.gitkeep dist/yuque-migration-skill/config/
+          cp config/yuque-config.example.json dist/yuque-migration-skill/config/yuque-config.json
           cd dist
           zip -r yuque-migration-skill.zip yuque-migration-skill/
           mv yuque-migration-skill.zip ../
