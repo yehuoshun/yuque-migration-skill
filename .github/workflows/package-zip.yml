@@ -27,7 +27,13 @@ jobs:
       - name: Generate changelog
         id: changelog
         run: |
-          LOG=$(git log -10 --pretty=format:"- %s (%an, %ar)" --no-merges)
+          # 上次 release 以来的所有提交
+          LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          if [ -n "$LAST_TAG" ]; then
+            LOG=$(git log ${LAST_TAG}..HEAD --pretty=format:"- %s (%an, %ar)" --no-merges)
+          else
+            LOG=$(git log --pretty=format:"- %s (%an, %ar)" --no-merges)
+          fi
           # 写入临时文件，避免多行字符串在 GitHub Actions 中出问题
           echo "log<<EOF" >> $GITHUB_OUTPUT
           echo "$LOG" >> $GITHUB_OUTPUT
