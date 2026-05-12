@@ -160,7 +160,7 @@ AI Agent 会自动：
 
 ### 日志
 
-位于 `logs/`（skill 目录下的 logs 文件夹，可自定义）。
+迁移日志输出到 stdout，可用管道重定向保存：`python scripts/migrate.py ... 2>&1 | tee migrate.log`
 
 ## 项目结构
 
@@ -172,7 +172,6 @@ yuque-migration-skill/
 ├── config/
 │   └── yuque-config.json # 配置文件（默认路径，可自定义）
 ├── progress/             # 迁移进度文件（默认路径，可自定义）
-├── logs/                 # 迁移日志（默认路径，可自定义）
 ├── scripts/
 │   └── migrate.py        # v5 迁移脚本
 ├── references/
@@ -199,7 +198,7 @@ flowchart TD
     C1 -->|是| C2["GET /repos/{book_id} 取文档数"]
     C2 --> C3{"items_count = 0?"}
     C3 -->|是| G["汇报: 源库为空"]
-    C3 -->|否| D["步骤2b: 检查目标库容量"]
+    C3 -->|否| D["步骤2: 检查目标库容量"]
     D --> D1{">= 4500?"}
     D1 -->|是| D1a["⛔ 暂停切换目标库"] --> C
     D1 -->|否| E["步骤3: 逐篇复制"]
