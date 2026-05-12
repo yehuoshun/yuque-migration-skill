@@ -847,6 +847,19 @@ def main():
             print(f"  🔄 [{doc_id}] {short_title}... binary", flush=True)
             return "binary"
 
+        # body 过大（>500KB 大概率是没被 is_binary 拦住的二进制/附件）
+        MAX_BODY_BYTES = 500 * 1024
+        if len(body.encode('utf-8', errors='replace')) > MAX_BODY_BYTES:
+            with p_lock:
+                p.setdefault("skipped_binary", []).append({
+                    "doc_id": doc_id, "title": title,
+                    "reason": f"body过大({len(body)}字符)"
+                })
+                p["skipped"] = p.get("skipped", 0) + 1
+                p.setdefault("processed_doc_ids", []).append(doc_id)
+            print(f"  🔄 [{doc_id}] {short_title}... body_too_large({len(body)}字)", flush=True)
+            return "body_too_large"
+
         # ── 阶段 2.5：去重检测 ──
         dup_result, dup_matched = check_duplicate(p, title, body, dedup_lock)
         if dup_result == "skip":
