@@ -119,15 +119,15 @@ def http_req(method, path, data=None, timeout=30):
             if status == 404:
                 return None, 404, {}
             if status in (502, 503, 504):
-                time.sleep(2 ** (attempt + 1))
+                time.sleep(1)
                 continue
             if attempt < 2:
-                time.sleep(2 ** (attempt + 1))
+                time.sleep(1)
             else:
                 return None, status, {}
         except Exception as e:
             if attempt < 2:
-                time.sleep(2 ** (attempt + 1))
+                time.sleep(1)
             else:
                 return None, str(e), {}
 
@@ -164,11 +164,6 @@ def is_binary(body):
             return False
         return True
     return False
-
-def is_img_token(body):
-    if not body: return False
-    pattern = r'^```\w*\s*\n\["\d+:\d+-\d+"\]\s*\n```\s*$'
-    return bool(re.match(pattern, body.strip()))
 
 def is_meaningless_doc(title, body):
     if '\n' in title or '\r' in title: return True
@@ -823,14 +818,6 @@ def main():
                 p.setdefault("processed_doc_ids", []).append(doc_id)
             print(f"  🔄 [{doc_id}] {short_title}... empty", flush=True)
             return "empty"
-        if is_img_token(body):
-            with p_lock:
-                p.setdefault("skipped_img_token", []).append(
-                    {"doc_id": doc_id, "title": title, "reason": "图片token文档"})
-                p["skipped"] = p.get("skipped", 0) + 1
-                p.setdefault("processed_doc_ids", []).append(doc_id)
-            print(f"  🔄 [{doc_id}] {short_title}... skipped_img_token", flush=True)
-            return "skipped_img_token"
         if is_meaningless_doc(orig_title, body):
             with p_lock:
                 p.setdefault("skipped_meaningless", []).append(
@@ -846,19 +833,6 @@ def main():
                 p.setdefault("processed_doc_ids", []).append(doc_id)
             print(f"  🔄 [{doc_id}] {short_title}... binary", flush=True)
             return "binary"
-
-        # body 过大（>500KB 大概率是没被 is_binary 拦住的二进制/附件）
-        MAX_BODY_BYTES = 500 * 1024
-        if len(body.encode('utf-8', errors='replace')) > MAX_BODY_BYTES:
-            with p_lock:
-                p.setdefault("skipped_binary", []).append({
-                    "doc_id": doc_id, "title": title,
-                    "reason": f"body过大({len(body)}字符)"
-                })
-                p["skipped"] = p.get("skipped", 0) + 1
-                p.setdefault("processed_doc_ids", []).append(doc_id)
-            print(f"  🔄 [{doc_id}] {short_title}... body_too_large({len(body)}字)", flush=True)
-            return "body_too_large"
 
         # ── 阶段 2.5：去重检测 ──
         dup_result, dup_matched = check_duplicate(p, title, body, dedup_lock)
