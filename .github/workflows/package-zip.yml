@@ -24,6 +24,15 @@ jobs:
           zip -r yuque-migration-skill.zip yuque-migration-skill/
           mv yuque-migration-skill.zip ../
 
+      - name: Generate changelog
+        id: changelog
+        run: |
+          LOG=$(git log -10 --pretty=format:"- %s (%an, %ar)" --no-merges)
+          # 写入临时文件，避免多行字符串在 GitHub Actions 中出问题
+          echo "log<<EOF" >> $GITHUB_OUTPUT
+          echo "$LOG" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
       - name: Upload to tagged release
         if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'release'
         uses: softprops/action-gh-release@v2
@@ -37,7 +46,11 @@ jobs:
           tag_name: latest
           name: Latest Build
           body: |
-            自动构建的最新版本。
+            ## 📝 最近变更
+
+            ${{ steps.changelog.outputs.log }}
+
+            📦 包含完整源码 + 配置模板 + 迁移脚本
 
             📖 [SKILL.md 执行规范](https://github.com/yehuoshun/yuque-migration-skill/blob/main/SKILL.md)
           files: yuque-migration-skill.zip
