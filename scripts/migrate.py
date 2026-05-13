@@ -639,6 +639,117 @@ def mount_docs_to_categories(p, doc_ids, part_bodies, categories, p_lock=None):
 
 # ==================== 主流程 ====================
 
+def generate_report(p):
+    """生成 Markdown 汇总报告，返回文件路径"""
+    from datetime import datetime, timezone, timedelta
+    tz = timezone(timedelta(hours=8))
+    now = datetime.now(tz).strftime("%Y-%m-%d %H:%M:%S")
+
+    copies = p.get("multi_category_copies", 0)
+    cats = len(p.get("toc_map", {}))
+    total = p.get("total_docs", 0)
+    created = p.get("created", 0)
+    skipped = p.get("skipped", 0)
+    failed = p.get("failed", 0)
+    initial = p.get("initial_count", 0)
+    local = p.get("local_created", 0)
+    current = initial + local
+
+    # 跳过明细
+    dup = p.get("skipped_duplicates", [])
+    empty = p.get("skipped_empty", [])
+    lake = p.get("skipped_lake", [])
+    binary = p.get("skipped_binary", [])
+    meaningless = p.get("skipped_meaningless", [])
+    unsupported = p.get("skipped_unsupported", [])
+    fail_list = p.get("failed_list", [])
+    orphans = p.get("orphans", [])
+
+    lines = []
+    lines.append("# 语雀知识库迁移报告")
+    lines.append("")
+    lines.append(f"- **源库**: {p['source_name']} (ID: {p['source_book_id']})")
+    lines.append(f"- **目标库**: {p['target_name']} (ID: {p['target_book_id']})")
+    lines.append(f"- **完成时间**: {now}")
+    lines.append("")
+
+    # 概览
+    lines.append("## 概览")
+    lines.append("")
+    lines.append("| 指标 | 数量 |")
+    lines.append("|------|------|")
+    lines.append(f"| 源文档总数 | {total} |")
+    dup_create = copies + created
+    line_created = f"{dup_create}（含 {copies} 篇多目录副本）" if copies else str(created)
+    lines.append(f"| 成功创建 | {line_created} |")
+    skip_parts = []
+    if dup: skip_parts.append(f"去重 {len(dup)}")
+    if empty: skip_parts.append(f"空文档 {len(empty)}")
+    if lake: skip_parts.append(f"Lake {len(lake)}")
+    if binary: skip_parts.append(f"二进制 {len(binary)}")
+    if meaningless: skip_parts.append(f"无意义 {len(meaningless)}")
+    if unsupported: skip_parts.append(f"不支持格式 {len(unsupported)}")
+    skip_detail = "、".join(skip_parts) if skip_parts else "—"
+    lines.append(f"| 跳过 | {skipped}（{skip_detail}） |")
+    lines.append(f"| 失败 | {failed} |")
+    lines.append(f"| 已建目录 | {cats} |")
+    lines.append(f"| 目标库用量 | {current}/5000 |")
+    lines.append("")
+
+    # 跳过明细
+    sections = [
+        ("去重", dup, lambda x: f"- {x['title']} → 匹配: {x.get('matched', '?')}" if 'matched' in x else f"- {x['title']}"),
+        ("空文档", empty, lambda x: f"- {x['title']}"),
+        ("Lake 文档", lake, lambda x: f"- {x['title']}（{x.get('reason', '')}）"),
+        ("二进制文件", binary, lambda x: f"- {x['title']}"),
+        ("无意义文档", meaningless, lambda x: f"- {x['title']}（{x.get('reason', '')}）"),
+        ("不支持格式", unsupported, lambda x: f"- {x['title']}（{x.get('format', '?')}）"),
+    ]
+    has_skip_detail = any(s[1] for s in sections)
+    if has_skip_detail:
+        lines.append("## 跳过明细")
+        lines.append("")
+        for name, items, fmt_fn in sections:
+            if not items:
+                continue
+            lines.append(f"### {name}（{len(items)} 篇）")
+            lines.append("")
+            for item in items:
+                lines.append(fmt_fn(item))
+            lines.append("")
+
+    # 失败
+    if fail_list:
+        lines.append("## 失败（{} 篇）".format(len(fail_list)))
+        lines.append("")
+        for f in fail_list:
+            lines.append(f"- {f.get('title', '?')}（{f.get('reason', '?')}）")
+        lines.append("")
+
+    # 孤儿
+    if orphans:
+        lines.append("## 孤儿文档（{} 篇）".format(len(orphans)))
+        lines.append("")
+        for o in orphans:
+            errors = ', '.join(o.get('errors', []))
+            lines.append(f"- {o['title']}（{errors}）")
+        lines.append("")
+
+    # 目录结构
+    if cats:
+        lines.append("## 目录结构（{} 个）".format(cats))
+        lines.append("")
+        for cat in sorted(p.get("toc_map", {}).keys()):
+            lines.append(f"- {cat}")
+        lines.append("")
+
+    # 写入文件
+    report_path = PROGRESS_FILE + ".report.md"
+    with open(report_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+    return report_path
+
+
 def main():
     global PROGRESS_FILE, SOURCE_ID, TARGET_ID, TARGET_NS, MAX_WORKERS
 
@@ -972,10 +1083,14 @@ def main():
     cats = len(p.get("toc_map", {}))
     if cats:
         print(f"📂 已建 {cats} 个目录", flush=True)
-    orphans = len(p.get("orphans", []))
-    if orphans:
-        print(f"⚠️ {orphans} 篇孤儿文档（已创建但挂载失败）", flush=True)
+    orphan_count = len(p.get("orphans", []))
+    if orphan_count:
+        print(f"⚠️ {orphan_count} 篇孤儿文档（已创建但挂载失败）", flush=True)
     save_progress(p)
+
+    # ── 生成 Markdown 汇总报告 ──
+    report_path = generate_report(p)
+    print(f"📄 汇总报告: {report_path}", flush=True)
 
 
 if __name__ == "__main__":
