@@ -112,11 +112,19 @@ def http_req(method, path, data=None, timeout=30):
             if status == 429:
                 remaining = e.headers.get("X-RateLimit-Remaining", "")
                 if remaining == "0":
-                    return None, 429, {}
-                if attempt < 2:
-                    time.sleep(1)
+                    # 配额耗尽，不等了，让调用方决定
+                    return None, 429, {"X-RateLimit-Remaining": "0"}
+                # 瞬时限流，渐进退避：1s/3s/5s
+                delays = [1, 3, 5]
+                if attempt < len(delays):
+                    delay = delays[attempt]
+                    # 有 remaining 值时打印便于调试
+                    if remaining:
+                        print(f"  ⚡ 429限流(剩余={remaining})，{delay}s后重试...", flush=True)
+                    time.sleep(delay)
                     continue
-                return None, 429, {}
+                # 重试耗尽，返回限流状态
+                return None, 429, {"X-RateLimit-Remaining": remaining}
             if status == 404:
                 return None, 404, {}
             if status in (502, 503, 504):
