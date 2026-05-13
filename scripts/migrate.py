@@ -645,6 +645,15 @@ def generate_report(p):
     tz = timezone(timedelta(hours=8))
     now = datetime.now(tz).strftime("%Y-%m-%d %H:%M:%S")
 
+    source_ns = p.get("source_namespace", "")
+    def doc_link(doc_id, title=""):
+        """生成语雀文档链接"""
+        url = f"https://www.yuque.com/{source_ns}/{doc_id}"
+        label = title or str(doc_id)
+        return f"[{label}]({url})"
+    def get_id(item):
+        return item.get("doc_id") or item.get("id", "?")
+
     copies = p.get("multi_category_copies", 0)
     cats = len(p.get("toc_map", {}))
     total = p.get("total_docs", 0)
@@ -698,12 +707,12 @@ def generate_report(p):
 
     # 跳过明细
     sections = [
-        ("去重", dup, lambda x: f"- {x['title']} → 匹配: {x.get('matched', '?')}" if 'matched' in x else f"- {x['title']}"),
-        ("空文档", empty, lambda x: f"- {x['title']}"),
-        ("Lake 文档", lake, lambda x: f"- {x['title']}（{x.get('reason', '')}）"),
-        ("二进制文件", binary, lambda x: f"- {x['title']}"),
-        ("无意义文档", meaningless, lambda x: f"- {x['title']}（{x.get('reason', '')}）"),
-        ("不支持格式", unsupported, lambda x: f"- {x['title']}（{x.get('format', '?')}）"),
+        ("去重", dup, lambda x: f"- {doc_link(get_id(x), x['title'])} → 匹配: {x.get('matched', '?')}" if 'matched' in x else f"- {doc_link(get_id(x), x['title'])}"),
+        ("空文档", empty, lambda x: f"- {doc_link(get_id(x), x['title'])}"),
+        ("Lake 文档", lake, lambda x: f"- {doc_link(get_id(x), x['title'])}（{x.get('reason', '')}）"),
+        ("二进制文件", binary, lambda x: f"- {doc_link(get_id(x), x['title'])}"),
+        ("无意义文档", meaningless, lambda x: f"- {doc_link(get_id(x), x['title'])}（{x.get('reason', '')}）"),
+        ("不支持格式", unsupported, lambda x: f"- {doc_link(get_id(x), x['title'])}（{x.get('format', '?')}）"),
     ]
     has_skip_detail = any(s[1] for s in sections)
     if has_skip_detail:
@@ -723,7 +732,7 @@ def generate_report(p):
         lines.append("## 失败（{} 篇）".format(len(fail_list)))
         lines.append("")
         for f in fail_list:
-            lines.append(f"- {f.get('title', '?')}（{f.get('reason', '?')}）")
+            lines.append(f"- {doc_link(get_id(f), f.get('title', '?'))}（{f.get('reason', '?')}）")
         lines.append("")
 
     # 孤儿
@@ -732,7 +741,7 @@ def generate_report(p):
         lines.append("")
         for o in orphans:
             errors = ', '.join(o.get('errors', []))
-            lines.append(f"- {o['title']}（{errors}）")
+            lines.append(f"- {doc_link(get_id(o), o['title'])}（{errors}）")
         lines.append("")
 
     # 目录结构
