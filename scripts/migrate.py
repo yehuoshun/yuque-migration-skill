@@ -22,6 +22,10 @@ BATCH_SIZE = 100
 MAX_WORKERS_INIT = 5
 MAX_WORKERS = 5
 
+# ── RateLimit 追踪 ──
+_last_remaining = None
+_prev_logged_remaining = None
+
 
 # ── 内存感知 (K8s OOM 防杀) ──
 def _get_pod_mem_limit():
@@ -90,6 +94,7 @@ def save_progress(p):
 # ==================== HTTP 请求 ====================
 
 def http_req(method, path, data=None, timeout=30):
+    global _last_remaining
     url = f"{BASE}{path}"
     body_bytes = None
     if data is not None:
@@ -106,11 +111,24 @@ def http_req(method, path, data=None, timeout=30):
                 status = resp.status
                 headers = dict(resp.headers)
                 body = json.loads(resp.read().decode("utf-8"))
+                # 追踪 X-RateLimit-Remaining
+                rem = headers.get("X-RateLimit-Remaining", "")
+                if rem:
+                    try:
+                        _last_remaining = int(rem)
+                    except ValueError:
+                        pass
                 return body, status, headers
         except urllib.error.HTTPError as e:
             status = e.code
             if status == 429:
                 remaining = e.headers.get("X-RateLimit-Remaining", "")
+                # 追踪 remaining（即使是 429 也记录）
+                if remaining:
+                    try:
+                        _last_remaining = int(remaining)
+                    except ValueError:
+                        pass
                 if remaining == "0":
                     # 配额耗尽，不等了，让调用方决定
                     return None, 429, {"X-RateLimit-Remaining": "0"}
@@ -361,8 +379,14 @@ def llm_clean_and_classify(body, title, need_new_title=False, timeout=120):
     """
     body = fix_table_format(body)
 
-    if len(body) < 500 or not needs_llm_cleaning(body):
+    if not body.strip():
         return body, ["未分类"], None
+    if not needs_llm_cleaning(body):
+        return body, ["未分类"], None
+
+    # 短文档也送 LLM 分类，只要 needs_llm_cleaning 判定有意义
+    if len(body) < 500:
+        body = body + "\n\n（短文档，请根据现有内容分类）"
 
     MAX_CHARS = 20000
     truncated = False
@@ -1105,9 +1129,18 @@ def main():
 
         save_progress(p)
         current_total = initial_count + p.get("local_created", 0)
+        # ── RateLimit 变化追踪 ──
+        global _last_remaining, _prev_logged_remaining
+        rl_str = ""
+        if _last_remaining is not None:
+            rl_str = f" 剩余={_last_remaining}"
+            # 显著下降时单独记录
+            if _prev_logged_remaining is not None and _prev_logged_remaining - _last_remaining >= 50:
+                print(f"  📉 RateLimit-Remaining: {_prev_logged_remaining} → {_last_remaining}", flush=True)
+            _prev_logged_remaining = _last_remaining
         print(f"  📊 {offset}/{total} ({offset*100//total}%), "
               f"创={p['created']} 跳={p['skipped']} 败={p['failed']} "
-              f"容量={current_total}/5000", flush=True)
+              f"容量={current_total}/5000{rl_str}", flush=True)
 
     # 汇报
     copies = p.get("multi_category_copies", 0)
