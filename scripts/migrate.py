@@ -762,33 +762,15 @@ def main():
         fmt = data.get("format", "markdown")
         body = data.get("body", "")
 
-        # ── Lake 无损搬运 ──
+        # ── Lake 跳过 ──
         if fmt == "lake":
-            body_lake = data.get("body_lake", body)
-            result2, status2, _ = api_post(f"/repos/{TARGET_ID}/docs", {
-                "title": title, "body": body_lake, "format": "lake"
-            }, timeout=60)
-            if result2 is None:
-                if status2 == 429: return "rate_limit"
-                with p_lock:
-                    p.setdefault("failed_list", []).append(
-                        {"id": doc_id, "title": title, "reason": f"lake创建失败: {status2}"})
-                    p["failed"] = p.get("failed", 0) + 1
-                    p.setdefault("processed_doc_ids", []).append(doc_id)
-                print(f"  🔄 [{doc_id}] {short_title}... lake_failed", flush=True)
-                return "lake_failed"
-            new_id = result2["data"]["id"]
-            with toc_lock:
-                with p_lock:
-                    p.setdefault("lake_docs", []).append(
-                        {"doc_id": doc_id, "new_id": new_id, "title": title, "reason": "lake格式无损搬运"})
-                    p["created_doc_mapping"][str(doc_id)] = new_id
-                    p["created"] = p.get("created", 0) + 1
-                    p["local_created"] = p.get("local_created", 0) + 1
-                    p.setdefault("processed_doc_ids", []).append(doc_id)
-                    mount_docs_to_categories(p, [new_id], [(title, body_lake)], ["未分类"], p_lock)
-            print(f"  🔄 [{doc_id}] {short_title}... lake_created", flush=True)
-            return "lake_created"
+            with p_lock:
+                p.setdefault("skipped_lake", []).append(
+                    {"doc_id": doc_id, "title": title, "reason": "lake文档无法完美迁移，已跳过"})
+                p["skipped"] = p.get("skipped", 0) + 1
+                p.setdefault("processed_doc_ids", []).append(doc_id)
+            print(f"  ⏭ [{doc_id}] {short_title}... skipped_lake", flush=True)
+            return "skipped_lake"
 
         # 格式过滤
         UNSUPPORTED_FORMATS = {"doc", "docx", "pdf", "image", "png", "jpg", "jpeg",
@@ -801,7 +783,7 @@ def main():
                 p.setdefault("processed_doc_ids", []).append(doc_id)
             print(f"  🔄 [{doc_id}] {short_title}... skipped_format_{fmt}", flush=True)
             return f"skipped_format_{fmt}"
-        if fmt not in ("markdown", "lake"):
+        if fmt not in ("markdown",):
             with p_lock:
                 p.setdefault("failed_list", []).append(
                     {"id": doc_id, "title": title, "reason": f"未知格式: {fmt}"})
