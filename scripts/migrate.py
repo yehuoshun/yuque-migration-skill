@@ -70,6 +70,7 @@ def _check_memory():
 with open(CONFIG_FILE) as f:
     cfg = json.load(f)
 TOKEN = cfg["token"]
+BASE = cfg.get("base", "https://www.yuque.com/api/v2")
 LLM_CFG = cfg["llm"]
 
 
@@ -986,7 +987,7 @@ def main():
         n_cats = len(categories)
         # 先更新进度（p_lock 毫秒级，不包含 IO）
         with p_lock:
-            p["created_doc_mapping"][str(doc_id)] = new_id
+            p.setdefault("created_doc_mapping", {})[str(doc_id)] = new_id
             p["created"] = p.get("created", 0) + 1
             p["local_created"] = p.get("local_created", 0) + 1
             p.setdefault("processed_doc_ids", []).append(doc_id)
