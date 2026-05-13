@@ -150,15 +150,31 @@ def api_put(path, data, timeout=30):
 # ==================== 文档检测函数 ====================
 
 def is_binary(body):
-    """二进制文档检测：\x00 铁定二进制；控制字符比例高+绝对量大且无可读文字才判二进制。"""
+    """二进制文档检测：\x00 铁定二进制；控制字符+高位字节比例高+绝对量大且无可读文字才判二进制。"""
     if len(body) < 50:
         return False
     sample = body[:4096]
     if '\x00' in sample[:1024]:
         return True
+    # 控制字符（0-31，排除换行/回车/制表）
     control_chars = sum(1 for c in sample if ord(c) < 32 and c not in '\n\r\t')
-    ratio = control_chars / max(len(sample), 1)
-    if ratio > 0.30 and control_chars > 50:
+    # 高位字节（>127，base64 编码的二进制文件特征）
+    high_bytes = sum(1 for c in sample if ord(c) > 127)
+    bad_chars = control_chars + high_bytes
+    ratio = bad_chars / max(len(sample), 1)
+    if ratio > 0.30 and bad_chars > 50:
+        # 高位字节 > 200 → 检查是否孤立散布（base64 二进制特征）
+        # 纯中文文档高位字节相邻成句，不会孤立
+        if high_bytes > 200:
+            isolated = 0
+            for i, c in enumerate(sample):
+                if ord(c) > 127:
+                    left = i == 0 or ord(sample[i-1]) <= 127
+                    right = i == len(sample) - 1 or ord(sample[i+1]) <= 127
+                    if left and right:
+                        isolated += 1
+            if isolated / max(high_bytes, 1) > 0.25:
+                return True
         # 二次确认：有可读文字就不是二进制（可能是编码损坏的文档）
         readable = len(re.findall(r'[\u4e00-\u9fff\w]{4,}', sample))
         if readable > 5:
