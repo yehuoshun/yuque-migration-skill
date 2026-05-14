@@ -91,6 +91,33 @@ def save_progress(p):
     os.replace(tmp, PROGRESS_FILE)
 
 
+def _book_counters(p, book_id=None):
+    """获取指定知识库的计数器 dict，不存在则初始化"""
+    if book_id is None:
+        book_id = str(p["target_book_id"])
+    else:
+        book_id = str(book_id)
+    bc = p.setdefault("created_by_book", {})
+    if book_id not in bc:
+        bc[book_id] = {"created": 0, "local_created": 0, "multi_category_copies": 0}
+    return bc[book_id]
+
+
+def _migrate_flat_counters(p):
+    """将旧的平铺计数器迁移到 created_by_book 结构"""
+    if "created_by_book" not in p:
+        p["created_by_book"] = {}
+        bid = str(p["target_book_id"])
+        p["created_by_book"][bid] = {
+            "created": p.pop("created", 0),
+            "local_created": p.pop("local_created", 0),
+            "multi_category_copies": p.pop("multi_category_copies", 0)
+        }
+    # 清理可能残留的旧字段
+    for k in ("created", "local_created", "multi_category_copies"):
+        p.pop(k, None)
+
+
 # ==================== HTTP 请求 ====================
 
 def http_req(method, path, data=None, timeout=30):
@@ -505,7 +532,10 @@ def _find_title_in_toc(nodes, target_title, parent_uuid):
 
 def _get_toc_cache(p):
     global TARGET_ID
-    cache = p.setdefault("_toc_cache", {})
+    cache = p.get("_toc_cache")
+    if cache is None or not isinstance(cache, dict):
+        cache = {}
+        p["_toc_cache"] = cache
     if cache.get("tree") is not None:
         return cache["tree"]
     toc_result, _, _ = api_get(f"/repos/{TARGET_ID}/toc")
@@ -571,7 +601,11 @@ def ensure_category(p, cat_name):
                     "action": "appendNode", "action_mode": "child",
                     "type": "TITLE", "title": part, "target_uuid": parent_uuid
                 })
-            if result is None:
+                if result is None:
+                    print(f"  ⚠️ 创建目录 '{part}' 失败(status={status})，降级到父层级")
+                    toc_map[cat_name] = parent_uuid
+                    return parent_uuid
+            else:
                 print(f"  ⚠️ 创建目录 '{part}' 失败(status={status})，降级到父层级")
                 toc_map[cat_name] = parent_uuid
                 return parent_uuid
@@ -634,7 +668,6 @@ def mount_docs_to_categories(p, doc_ids, part_bodies, categories, p_lock=None):
         categories = ["未分类"]
 
     p.setdefault("toc_map", {})
-    p.setdefault("multi_category_copies", 0)
 
     for i, cat_name in enumerate(categories):
         if i == 0:
@@ -669,13 +702,15 @@ def mount_docs_to_categories(p, doc_ids, part_bodies, categories, p_lock=None):
             if copied_ids:
                 if p_lock:
                     with p_lock:
-                        p["created"] = p.get("created", 0) + len(copied_ids)
-                        p["local_created"] = p.get("local_created", 0) + len(copied_ids)
-                        p["multi_category_copies"] += len(copied_ids)
+                        bc3 = _book_counters(p)
+                        bc3["created"] += len(copied_ids)
+                        bc3["local_created"] += len(copied_ids)
+                        bc3["multi_category_copies"] += len(copied_ids)
                 else:
-                    p["created"] = p.get("created", 0) + len(copied_ids)
-                    p["local_created"] = p.get("local_created", 0) + len(copied_ids)
-                    p["multi_category_copies"] += len(copied_ids)
+                    bc3 = _book_counters(p)
+                    bc3["created"] += len(copied_ids)
+                    bc3["local_created"] += len(copied_ids)
+                    bc3["multi_category_copies"] += len(copied_ids)
                 uuid = ensure_category(p, cat_name)
                 if uuid:
                     mount_docs_to_uuid(p, copied_ids, uuid, cat_name)
@@ -703,14 +738,14 @@ def generate_report(p):
     def get_id(item):
         return item.get("doc_id") or item.get("id", "?")
 
-    copies = p.get("multi_category_copies", 0)
+    copies = sum(b.get("multi_category_copies", 0) for b in p.get("created_by_book", {}).values())
     cats = len(p.get("toc_map", {}))
     total = p.get("total_docs", 0)
-    created = p.get("created", 0)
+    created = sum(b.get("created", 0) for b in p.get("created_by_book", {}).values())
     skipped = p.get("skipped", 0)
     failed = p.get("failed", 0)
     initial = p.get("initial_count", 0)
-    local = p.get("local_created", 0)
+    local = sum(b.get("local_created", 0) for b in p.get("created_by_book", {}).values())
     current = initial + local
 
     # 跳过明细
@@ -858,6 +893,7 @@ def main():
 
     print(f"📋 进度文件: {PROGRESS_FILE}")
     p = load_progress()
+    _migrate_flat_counters(p)  # v5→v6: 计数器改为按知识库ID分组
     SOURCE_ID = p["source_book_id"]
     TARGET_ID = p["target_book_id"]
     TARGET_NS = p["target_namespace"]
@@ -874,10 +910,11 @@ def main():
             p["initial_count"] = 0
         save_progress(p)
     initial_count = p["initial_count"]
-    local_created = p.get("local_created", 0)
+    bc = _book_counters(p)
+    local_created = bc["local_created"]
     current_total = initial_count + local_created
 
-    print(f"📦 续传: offset={offset}, 已创建={p['created']}, 跳过={p['skipped']}, 失败={p['failed']}")
+    print(f"📦 续传: offset={offset}, 已创建={bc['created']}, 跳过={p['skipped']}, 失败={p['failed']}")
     print(f"   源库: {p['source_name']} ({SOURCE_ID})")
     print(f"   目标库: {p['target_name']} ({TARGET_ID})")
     print(f"   目标库容量: 初始{initial_count} + 本次{local_created} = {current_total}/5000", flush=True)
@@ -1036,8 +1073,9 @@ def main():
         # 先更新进度（p_lock 毫秒级，不包含 IO）
         with p_lock:
             p.setdefault("created_doc_mapping", {})[str(doc_id)] = new_id
-            p["created"] = p.get("created", 0) + 1
-            p["local_created"] = p.get("local_created", 0) + 1
+            bc2 = _book_counters(p)
+            bc2["created"] += 1
+            bc2["local_created"] += 1
             p.setdefault("processed_doc_ids", []).append(doc_id)
 
         # 再挂目录（只持 toc_lock，p_lock 已释放，不阻塞其他线程更新进度）
@@ -1061,11 +1099,43 @@ def main():
     print(f"  🧵 并发数: {MAX_WORKERS}", flush=True)
 
     while offset < total:
-        current_total = initial_count + p.get("local_created", 0)
+        bc = _book_counters(p)
+        current_total = initial_count + bc["local_created"]
         if current_total >= 4500:
-            print(f"\n⚠️ 目标库已达切换阈值（初始{initial_count}+已迁{p['local_created']}={current_total}≥4500）！", flush=True)
-            save_progress(p)
-            return
+            next_target = p.get('next_target')
+            if next_target:
+                print(f"\n🔄 目标库 {p['target_name']} 已满（{current_total}/5000），自动切换到 {next_target['book_name']} ({next_target['book_id']})", flush=True)
+                # 记录旧目标
+                if 'target_history' not in p: p['target_history'] = []
+                p['target_history'].append({
+                    'book_id': p['target_book_id'], 'book_name': p['target_name'],
+                    'namespace': p['target_namespace'],
+                    'created': bc['created'], 'local_created': bc['local_created'],
+                    'multi_category_copies': bc['multi_category_copies']
+                })
+                # 切换到新目标（计数器由 _book_counters 自动初始化为 0）
+                p['target_book_id'] = next_target['book_id']
+                p['target_name'] = next_target['book_name']
+                p['target_namespace'] = next_target['namespace']
+                p['_created_title_cache'] = {}
+                p['toc_map'] = {}
+                p['initial_count'] = 0
+                p['next_target'] = None
+                TARGET_ID = next_target['book_id']
+                TARGET_NS = next_target['namespace']
+                # 获取新目标库初始文档数
+                repo_result2, _, _ = api_get(f"/repos/{TARGET_ID}")
+                if repo_result2:
+                    init2 = repo_result2.get("data", {}).get("items_count", 0)
+                    p['initial_count'] = init2
+                    initial_count = init2
+                    print(f"   新目标库初始: {init2} 篇", flush=True)
+                save_progress(p)
+                continue
+            else:
+                print(f"\n⚠️ 目标库已满（{current_total}/5000）且无备用目标，暂停！", flush=True)
+                save_progress(p)
+                return
 
         print(f"\n📄 offset={offset} 获取 {BATCH_SIZE} 篇...", flush=True)
         result, status, headers = api_get(
@@ -1128,7 +1198,8 @@ def main():
                 p["last_offset"] = offset
 
         save_progress(p)
-        current_total = initial_count + p.get("local_created", 0)
+        bc4 = _book_counters(p)
+        current_total = initial_count + bc4["local_created"]
         # ── RateLimit 变化追踪 ──
         global _last_remaining, _prev_logged_remaining
         rl_str = ""
@@ -1139,13 +1210,14 @@ def main():
                 print(f"  📉 RateLimit-Remaining: {_prev_logged_remaining} → {_last_remaining}", flush=True)
             _prev_logged_remaining = _last_remaining
         print(f"  📊 {offset}/{total} ({offset*100//total}%), "
-              f"创={p['created']} 跳={p['skipped']} 败={p['failed']} "
+              f"创={bc4['created']} 跳={p['skipped']} 败={p['failed']} "
               f"容量={current_total}/5000{rl_str}", flush=True)
 
     # 汇报
-    copies = p.get("multi_category_copies", 0)
+    bc5 = _book_counters(p)
+    copies = bc5.get("multi_category_copies", 0)
     dup_count = len(p.get("skipped_duplicates", []))
-    print(f"\n✅ 迁移完成！创={p['created']}(含多目录副本{copies}篇) "
+    print(f"\n✅ 迁移完成！创={bc5['created']}(含多目录副本{copies}篇) "
           f"跳={p['skipped']}(含去重{dup_count}篇) 败={p['failed']}", flush=True)
     cats = len(p.get("toc_map", {}))
     if cats:
