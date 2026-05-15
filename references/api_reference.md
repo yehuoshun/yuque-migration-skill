@@ -234,6 +234,8 @@ Content-Type: application/json
 }
 ```
 
+> 💡 如需**首插**（文档放在目录第一位），将 `action` 改为 `prependNode`。详见 [目录 API](#目录-api) 章节。
+
 ### 更新文档
 
 ```http
