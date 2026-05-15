@@ -968,16 +968,6 @@ def main():
         fmt = data.get("format", "markdown")
         body = data.get("body", "")
 
-        # ── Lake 跳过 ──
-        if fmt == "lake":
-            with p_lock:
-                p.setdefault("skipped_lake", []).append(
-                    {"doc_id": doc_id, "title": title, "reason": "lake文档无法完美迁移，已跳过"})
-                p["skipped"] = p.get("skipped", 0) + 1
-                p.setdefault("processed_doc_ids", []).append(doc_id)
-            print(f"  ⏭ [{doc_id}] {short_title}... skipped_lake", flush=True)
-            return "skipped_lake"
-
         # 格式过滤
         UNSUPPORTED_FORMATS = {"doc", "docx", "pdf", "image", "png", "jpg", "jpeg",
                                "gif", "ppt", "pptx", "xls", "xlsx", "zip", "rar"}
@@ -989,7 +979,7 @@ def main():
                 p.setdefault("processed_doc_ids", []).append(doc_id)
             print(f"  🔄 [{doc_id}] {short_title}... skipped_format_{fmt}", flush=True)
             return f"skipped_format_{fmt}"
-        if fmt not in ("markdown",):
+        if fmt not in ("markdown", "lake"):
             with p_lock:
                 p.setdefault("failed_list", []).append(
                     {"id": doc_id, "title": title, "reason": f"未知格式: {fmt}"})
