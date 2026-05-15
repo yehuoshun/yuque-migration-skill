@@ -825,7 +825,7 @@ def generate_report(p):
         lines.append("")
         for o in orphans:
             errors = ', '.join(o.get('errors', []))
-            lines.append(f"- {doc_link(get_id(o), o['title'])}（{errors}）")
+            lines.append(f"- {doc_link(get_id(o), o.get('title', '?'))}（{errors}）")
         lines.append("")
 
     # 目录结构
