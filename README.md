@@ -6,6 +6,8 @@
 
 **核心理念：复制不搬。原库完全不动。**
 
+> 🆕 **姊妹 Skill**：需要「随看随搬 + 零格式转换 + 人工终审」的轻量整理方案？看 [doc-reorg-skill](https://github.com/yehuoshun/doc-reorg-skill)（两套方案并存，按场景选用）
+
 [![Release](https://img.shields.io/github/v/release/yehuoshun/yuque-migration-skill?label=release)](https://github.com/yehuoshun/yuque-migration-skill/releases)
 [![License](https://img.shields.io/github/license/yehuoshun/yuque-migration-skill)](./LICENSE)
 [![Python](https://img.shields.io/badge/python-3.8+-blue)](https://www.python.org)
