@@ -88,6 +88,10 @@ description: 将语雀知识库内容复制整理到另一个知识库。清洗�
   "processed_doc_ids": [111, 222],
   "created_doc_mapping": {"444": 555, "555": 666},
   "toc_map": {"Java": "uuid-xxx", "Python/异步": "uuid-yyy"},
+  "_toc_cache": {
+    "tree": [{"uuid": "root-uuid", "type": "TITLE", "title": "默认分组", "children": []}],
+    "fetched_at": "2026-01-01T00:00:00Z"
+  },
   "orphans": [{"doc_id": 999, "title": "xx", "errors": ["TOC挂载失败"]}],
   "rate_limit": {"remaining": 1234, "last_checked": "2026-01-01T00:00:00Z"},
   "initial_count": 50,
@@ -98,7 +102,12 @@ description: 将语雀知识库内容复制整理到另一个知识库。清洗�
   "target_history": [
     {"book_id": 111, "book_name": "目标库A", "created": 4500, "local_created": 4500, "multi_category_copies": 0},
     {"book_id": 456, "book_name": "目标库B", "created": 150, "local_created": 150, "multi_category_copies": 0}
-  ]
+  ],
+  "next_target": {
+    "book_id": 789,
+    "book_name": "备用目标库",
+    "namespace": "user/backup-repo"
+  }
 }
 ```
 
@@ -113,9 +122,11 @@ description: 将语雀知识库内容复制整理到另一个知识库。清洗�
 - `skipped`：跳过的总数
 - `toc_map`：已建目录缓存 `{分类名: uuid}`，避免重复 PUT TITLE
 - `orphans`：已创建成功但 TOC 挂载失败的文档
+- `_toc_cache`：完整目录树缓存。`tree` 为 GET /toc 返回的目录节点列表，`fetched_at` 为缓存时间。避免每次挂载都调 GET /toc，新创建的 TITLE 节点同步写入
 - `initial_count`：目标库迁移前的初始文档数
 - `local_created`：当前目标库累计创建的文档数
 - `_created_title_cache`：已创建文档的标题缓存，用于去重快速匹配
+- `next_target`：容量满时自动切换的备用目标库配置，含 `book_id` / `book_name` / `namespace`
 - 其余字段同上
 
 | API 文档 | `references/api_reference.md` |
