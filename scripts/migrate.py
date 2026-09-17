@@ -1109,6 +1109,7 @@ def main():
                 p['target_namespace'] = next_target['namespace']
                 p['_created_title_cache'] = {}
                 p['toc_map'] = {}
+                p['_toc_cache'] = {}
                 p['initial_count'] = 0
                 p['next_target'] = None
                 TARGET_ID = next_target['book_id']
