@@ -780,8 +780,9 @@ def generate_report(p):
 
     source_ns = p.get("source_namespace", "")
     def doc_link(doc_id, title=""):
-        """生成语雀文档链接"""
-        url = f"https://www.yuque.com/{source_ns}/{doc_id}"
+        """生成语雀文档链接（优先 slug，老进度文件无 slug 时 fallback doc_id）"""
+        slug = p.get("source_doc_slug", {}).get(doc_id, "")
+        url = f"https://www.yuque.com/{source_ns}/{slug}" if slug else f"https://www.yuque.com/{source_ns}/{doc_id}"
         label = title or str(doc_id)
         return f"[{label}]({url})"
     def get_id(item):
@@ -1203,6 +1204,10 @@ def main():
         if not docs:
             print("  无更多文档，完成。", flush=True)
             break
+
+        # 记录源文档 slug：报告源文档链接用（列表 API 自带，零额外请求）
+        for d in docs:
+            p.setdefault("source_doc_slug", {})[d["id"]] = d.get("slug", "")
 
         already_done = [d for d in docs if d["id"] in p.get("processed_doc_ids", [])]
         pending = [d for d in docs if d["id"] not in p.get("processed_doc_ids", [])]

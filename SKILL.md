@@ -88,6 +88,7 @@ description: 将语雀知识库内容复制整理到另一个知识库。清洗�
 
   "processed_doc_ids": [111, 222],
   "created_doc_mapping": {"444": 555, "555": 666},
+  "source_doc_slug": {"444": "doc-slug-1", "555": "doc-slug-2"},
   "toc_map": {"Java": "uuid-xxx", "Python/异步": "uuid-yyy"},
   "_toc_cache": {
     "tree": [{"uuid": "root-uuid", "type": "TITLE", "title": "默认分组", "children": []}],
@@ -121,6 +122,7 @@ description: 将语雀知识库内容复制整理到另一个知识库。清洗�
   - `{book_id}.local_created`：该库累计创建文档数
   - `{book_id}.multi_category_copies`：多目录复制产生的文档数
 - `skipped`：跳过的总数
+- `source_doc_slug`：源文档 slug 映射 `{doc_id: slug}`，报告源文档链接使用（列表 API 自带，零额外请求）
 - `toc_map`：已建目录缓存 `{分类名: uuid}`，避免重复 PUT TITLE
 - `orphans`：已创建成功但 TOC 挂载失败的文档
 - `_toc_cache`：完整目录树缓存。`tree` 为 GET /toc 返回的目录节点列表，`fetched_at` 为缓存时间。避免每次挂载都调 GET /toc，新创建的 TITLE 节点同步写入

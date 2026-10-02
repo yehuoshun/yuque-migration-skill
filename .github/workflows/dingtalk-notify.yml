@@ -11,8 +11,6 @@ on:
 jobs:
   notify:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     steps:
       - uses: yehuoshun/yehuoshun-notify@latest
         with:
