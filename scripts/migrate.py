@@ -91,6 +91,77 @@ def save_progress(p):
     os.replace(tmp, PROGRESS_FILE)
 
 
+def _created_file_path():
+    """已创建文档即时落盘文件路径（与进度文件同目录）"""
+    if PROGRESS_FILE.endswith(".json"):
+        return PROGRESS_FILE[:-5] + ".created.json"
+    return PROGRESS_FILE + ".created.json"
+
+
+def append_created_record(doc_id, new_id, final_title, cleaned):
+    """创建成功后立即追加一行（含 fsync）。
+
+    崩溃时最多丢最后半行：该篇续传重跑一次，不会产生重复创建。
+    """
+    rec = {
+        "book_id": TARGET_ID,
+        "doc_id": doc_id,
+        "new_id": new_id,
+        "title": final_title,
+        "body_200": normalize_for_compare(cleaned[:200]),
+        "body_500": normalize_for_compare(cleaned[:500]),
+        "body_md5": _body_md5(cleaned)
+    }
+    try:
+        with open(_created_file_path(), "a") as f:
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+    except OSError as e:
+        print(f"  ⚠️ created 记录写入失败: {e}", flush=True)
+
+
+def load_created_records(p):
+    """续传时合并即时落盘的已创建记录：doc_id 直接标记已处理 + 恢复去重缓存。
+
+    只合并当前目标库（book_id 匹配）的记录，切库后旧记录不污染新库缓存。
+    返回恢复条数。
+    """
+    path = _created_file_path()
+    if not os.path.exists(path):
+        return 0
+    n = 0
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except (ValueError, TypeError):
+                continue  # 半行损坏：跳过，该篇最多重跑一次
+            if rec.get("book_id") != TARGET_ID:
+                continue
+            doc_id = rec.get("doc_id")
+            new_id = rec.get("new_id")
+            if doc_id is None or new_id is None:
+                continue
+            if doc_id not in p.get("processed_doc_ids", []):
+                p.setdefault("processed_doc_ids", []).append(doc_id)
+            cache = p.setdefault("_created_title_cache", {})
+            title = rec.get("title")
+            if title and title not in cache:
+                cache[title] = {
+                    "doc_id": new_id,
+                    "body_200": rec.get("body_200", ""),
+                    "body_500": rec.get("body_500", ""),
+                    "body_md5": rec.get("body_md5")
+                }
+            p.setdefault("created_doc_mapping", {})[str(doc_id)] = new_id
+            n += 1
+    return n
+
+
 def _book_counters(p, book_id=None):
     """获取指定知识库的计数器 dict，不存在则初始化"""
     if book_id is None:
@@ -259,6 +330,10 @@ def normalize_for_compare(text):
     if not text: return ""
     return re.sub(r'\s+', ' ', text.strip())
 
+def _body_md5(text):
+    """normalize 后全文 md5：缓存路径的全文比对指纹"""
+    return hashlib.md5(normalize_for_compare(text).encode('utf-8', errors='replace')).hexdigest()
+
 def check_duplicate(p, title, body, dedup_lock):
     """检测目标库中是否已有同标题文档。
 
@@ -272,6 +347,13 @@ def check_duplicate(p, title, body, dedup_lock):
         cache = p.setdefault("_created_title_cache", {})
         if title in cache:
             cached = cache[title]
+            md5 = cached.get("body_md5")
+            if md5 is not None:
+                # 新缓存：以全文为准——全文相同才 skip，前缀相同但全文不同 → conflict（不误跳过）
+                if _body_md5(body) == md5:
+                    return ("skip", cached["doc_id"])
+                return ("conflict", cached["doc_id"])
+            # 老缓存（无 md5）：保持旧行为（200→500 逐级）
             if normalize_for_compare(body[:200]) == cached.get("body_200", ""):
                 return ("skip", cached["doc_id"])
             if normalize_for_compare(body[:500]) == cached.get("body_500", ""):
@@ -297,51 +379,19 @@ def check_duplicate(p, title, body, dedup_lock):
             continue
         match_body = doc_result.get("data", {}).get("body", "")
 
-        # 逐级比较（200字→500字→全文，按 SKILL.md 规格）
-        if normalize_for_compare(body[:200]) == normalize_for_compare(match_body[:200]):
-            with dedup_lock:
-                cache = p.setdefault("_created_title_cache", {})
-                if title not in cache:
-                    cache[title] = {
-                        "doc_id": match_id,
-                        "body_200": normalize_for_compare(match_body[:200]),
-                        "body_500": normalize_for_compare(match_body[:500])
-                    }
-            return ("skip", match_id)
-
-        if normalize_for_compare(body[:500]) == normalize_for_compare(match_body[:500]):
-            with dedup_lock:
-                cache = p.setdefault("_created_title_cache", {})
-                if title not in cache:
-                    cache[title] = {
-                        "doc_id": match_id,
-                        "body_200": normalize_for_compare(match_body[:200]),
-                        "body_500": normalize_for_compare(match_body[:500])
-                    }
-            return ("skip", match_id)
-
-        # 全文比较
-        if normalize_for_compare(body) == normalize_for_compare(match_body):
-            with dedup_lock:
-                cache = p.setdefault("_created_title_cache", {})
-                if title not in cache:
-                    cache[title] = {
-                        "doc_id": match_id,
-                        "body_200": normalize_for_compare(match_body[:200]),
-                        "body_500": normalize_for_compare(match_body[:500])
-                    }
-            return ("skip", match_id)
-
-        # 标题同内容不同 → 需重拟标题
+        # 同标题文档：以全文为准——全文相同 → 重复跳过；全文不同（含前缀相同）→ 重拟标题。
+        # 前缀相同但全文不同不算重复，避免误跳过丢内容（与缓存路径 md5 判定语义一致）
+        kind = "skip" if normalize_for_compare(body) == normalize_for_compare(match_body) else "conflict"
         with dedup_lock:
             cache = p.setdefault("_created_title_cache", {})
             if title not in cache:
                 cache[title] = {
                     "doc_id": match_id,
                     "body_200": normalize_for_compare(match_body[:200]),
-                    "body_500": normalize_for_compare(match_body[:500])
+                    "body_500": normalize_for_compare(match_body[:500]),
+                    "body_md5": _body_md5(match_body)
                 }
-        return ("conflict", match_id)
+        return (kind, match_id)
 
     return ("new", None)
 
@@ -411,15 +461,13 @@ def llm_clean_and_classify(body, title, need_new_title=False, timeout=120):
     if not needs_llm_cleaning(body):
         return body, ["未分类"], None
 
-    # 短文档也送 LLM 分类，只要 needs_llm_cleaning 判定有意义
-    if len(body) < 500:
-        body = body + "\n\n（短文档，请根据现有内容分类）"
-
+    # 短文档不修改正文（避免 LLM 异常回退时污染源内容），改为在 prompt 中提示
     MAX_CHARS = 20000
     truncated = False
     if len(body) > MAX_CHARS:
         body = body[:MAX_CHARS]
         truncated = True
+    is_short = len(body) < 500
 
     prompt = f"""你是语雀文档格式清洗 + 分类助手。
 
@@ -440,6 +488,7 @@ def llm_clean_and_classify(body, title, need_new_title=False, timeout=120):
 - 表格中不要使用 HTML 标签
 
 {"## 截断要求\n已给你文档前 " + str(MAX_CHARS) + " 字符。请找到**你可见文本内最后一个**完整的段落/章节边界（如 ## 标题后、段落结束、代码块结束），输出到该边界为止。不要把输出结束在句子中间或代码块内部。" if truncated else ""}
+{"## 短文档提示\n文档内容较少（不足500字）。直接根据现有内容判断分类即可，不要臆测或补充正文内容。" if is_short else ""}
 {"## 重拟标题要求\n⚠️ 特殊任务：此文档标题「" + title + "」在目标库中已存在同名文档，但内容不同，需要你根据文档内容生成一个新的、有区分度的标题。\n要求：新标题简洁（≤30字）、准确反映内容核心，避免与原标题重复。\n在输出末尾添加：<!-- NEW_TITLE: \"新标题\" -->" if need_new_title else ""}
 ## 分类要求
 阅读文档全文，判断它属于哪些主题分类（可多选）。
@@ -745,7 +794,9 @@ def generate_report(p):
     skipped = p.get("skipped", 0)
     failed = p.get("failed", 0)
     initial = p.get("initial_count", 0)
-    local = sum(b.get("local_created", 0) for b in p.get("created_by_book", {}).values())
+    # 只统计当前目标库的 local_created：切换过的历史库不叠加到当前库用量
+    cur_bc = _book_counters(p)
+    local = cur_bc.get("local_created", 0)
     current = initial + local
 
     # 跳过明细
@@ -772,8 +823,8 @@ def generate_report(p):
     lines.append("| 指标 | 数量 |")
     lines.append("|------|------|")
     lines.append(f"| 源文档总数 | {total} |")
-    dup_create = copies + created
-    line_created = f"{dup_create}（含 {copies} 篇多目录副本）" if copies else str(created)
+    # created 已含多目录副本（mount_docs_to_categories 中与 multi_category_copies 同步累加），不再叠加
+    line_created = f"{created}（含 {copies} 篇多目录副本）" if copies else str(created)
     lines.append(f"| 成功创建 | {line_created} |")
     skip_parts = []
     if dup: skip_parts.append(f"去重 {len(dup)}")
@@ -824,7 +875,7 @@ def generate_report(p):
         lines.append("## 孤儿文档（{} 篇）".format(len(orphans)))
         lines.append("")
         for o in orphans:
-            errors = ', '.join(o.get('errors', []))
+            errors = o.get('reason') or ', '.join(o.get('errors', []))
             lines.append(f"- {doc_link(get_id(o), o.get('title', '?'))}（{errors}）")
         lines.append("")
 
@@ -844,7 +895,7 @@ def generate_report(p):
 
 
 def main():
-    global PROGRESS_FILE, SOURCE_ID, TARGET_ID, TARGET_NS, MAX_WORKERS
+    global PROGRESS_FILE, SOURCE_ID, TARGET_ID, TARGET_NS, MAX_WORKERS, _last_remaining
 
     import sys
     from concurrent.futures import ThreadPoolExecutor, Future, as_completed
@@ -897,6 +948,11 @@ def main():
     SOURCE_ID = p["source_book_id"]
     TARGET_ID = p["target_book_id"]
     TARGET_NS = p["target_namespace"]
+
+    # 合并即时落盘的已创建记录：崩溃/中断恢复时防止重复创建（脏数据）
+    n_created = load_created_records(p)
+    if n_created:
+        print(f"  ♻️ 已恢复 {n_created} 篇已创建记录（防重复创建）", flush=True)
 
     offset = p["last_offset"]
     total = p["total_docs"]
@@ -1034,6 +1090,9 @@ def main():
             body_hash = hashlib.md5(body[:500].encode('utf-8', errors='replace')).hexdigest()[:8]
             final_title = f"{title}（{body_hash}）"
 
+        # 拼接后统一截断到 200 字符上限（语雀标题上限），并清理非法字符
+        final_title = fix_title(final_title)
+
         # ── 阶段 4：创建文档 + 挂目录 ──
         result2, status2, _ = api_post(f"/repos/{TARGET_ID}/docs", {
             "title": final_title, "body": cleaned, "format": "markdown"
@@ -1056,8 +1115,12 @@ def main():
                 cache[final_title] = {
                     "doc_id": new_id,
                     "body_200": normalize_for_compare(cleaned[:200]),
-                    "body_500": normalize_for_compare(cleaned[:500])
+                    "body_500": normalize_for_compare(cleaned[:500]),
+                    "body_md5": _body_md5(cleaned)
                 }
+
+        # 已创建事实立即落盘：崩溃/中断恢复时防止重复创建（进度主文件仍每批保存）
+        append_created_record(doc_id, new_id, final_title, cleaned)
 
         n_cats = len(categories)
         # 先更新进度（p_lock 毫秒级，不包含 IO）
@@ -1158,10 +1221,13 @@ def main():
 
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
             futures = {executor.submit(process_one_doc, doc): doc for doc in pending}
+            rate_limited = False
             for future in as_completed(futures):
                 doc = futures[future]
                 try:
                     res = future.result()
+                    if res == "rate_limit":
+                        rate_limited = True
                 except Exception as e:
                     print(f"  ❌ [{doc['id']}] 线程异常: {e}", flush=True)
                     with p_lock:
@@ -1174,6 +1240,14 @@ def main():
                 print(f"\n❌ 连续 {consecutive_errors} 次致命错误，暂停。", flush=True)
                 save_progress(p)
                 return
+
+            # 429 限流：配额耗尽等整点，瞬时限流退避 10s（避免整批无效重拉）
+            if rate_limited:
+                if _last_remaining == 0:
+                    wait_until_next_hour()
+                else:
+                    print("  ⏳ 瞬时限流，等待 10s 后重试...", flush=True)
+                    time.sleep(10)
 
             gc.collect()
             save_progress(p)
@@ -1192,7 +1266,7 @@ def main():
         bc4 = _book_counters(p)
         current_total = initial_count + bc4["local_created"]
         # ── RateLimit 变化追踪 ──
-        global _last_remaining, _prev_logged_remaining
+        global _prev_logged_remaining
         rl_str = ""
         if _last_remaining is not None:
             rl_str = f" 剩余={_last_remaining}"
