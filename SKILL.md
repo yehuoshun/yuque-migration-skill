@@ -58,6 +58,7 @@ description: 将语雀知识库内容复制整理到另一个知识库。清洗�
 | 配置 | `config/yuque-config.json`（skill 目录下的 config 文件夹） |
 | 迁移脚本 | `scripts/migrate.py`（v5 去重+重拟标题+容量追踪版） |
 | 进度 | `progress/{book_id}_{旧库名}.json`（skill 目录下的 progress 文件夹，可自定义） |
+| 已创建记录 | `progress/{book_id}_{旧库名}.created.json`（每篇创建成功后即时追加，续传时合并防重复创建） |
 | 日志 | `logs/migrate.log`（skill 目录下的 logs 文件夹） |
 
 进度文件结构：
@@ -204,12 +205,12 @@ GET /repos/{book_id}/docs?offset={N}&limit=100
    - 未知格式 → 记入 `failed`
 4. **二进制检测**：非 ASCII + 控制字符 > 30% → 跳过
 5. **去重**（先于 LLM，省 token）：
-   - 先查本地缓存 `_created_title_cache`（已创建文档的标题→内容指纹映射）
+   - 先查本地缓存 `_created_title_cache`（已创建文档的标题→全文指纹映射）
    - 缓存未命中则搜索目标库同标题文档
-   - 逐级比内容（200字→500字→全文），标准化空白后比较
+   - 同标题文档 → 标准化空白后**比对全文**（本地缓存用全文 md5）
    - 完全相同 → 跳过记 `skipped_duplicates`，不浪费 LLM 调用
    - 无同标题 → 继续步骤 6
-   - 标题同内容不同 → 标记「需重拟标题」，继续步骤 6
+   - 标题同内容不同（含前缀相同）→ 标记「需重拟标题」，继续步骤 6
 6. **LLM 清洗+分类+重拟标题（合并一次调用）**：
 
    **长文档截断**：单次喂入上限 **20000 字符**。超过则截取前 20000 字符送入 LLM，LLM 在可见文本内找最后一个完整段落/章节边界作为输出终点。
@@ -243,7 +244,7 @@ current_count = initial_count + local_created
 
 > `initial_count` 只在首次获取一次，续传时从进度文件读取。
 
-**3d. 每篇保存进度**：每处理完一篇立即保存进度文件。429 或错误时也即时保存。
+**3d. 保存进度**：每篇创建成功后立即写入 `{进度}.created.json`（已创建事实即时落盘，防崩溃重复创建）；进度主文件每批（≤100 篇）保存。中断续传时自动合并 created 记录。
 
 ### 步骤 4：汇报结果 + 生成报告
 
@@ -274,8 +275,8 @@ current_count = initial_count + local_created
 
 ```
 收到 429 → 读取 X-RateLimit-Remaining
-  remaining == "0" → 暂停等整点恢复
-  remaining > "0"  → 等 1s 重试（最多 3 次）
+  remaining == "0" → 批末统一暂停，等整点恢复
+  remaining > "0"  → 请求内渐进退避 1s/3s/5s 重试；批末仍限流则再退避 10s
 恢复条件：当前分钟数 = 0（整点）
 ```
 
@@ -288,7 +289,7 @@ current_count = initial_count + local_created
 
 ## 续传
 
-中断后说「继续整理《旧库名》」→ 从 `last_offset` 续传。`toc_map` 保留已建目录结构，新文档直接复用已有 uuid。
+中断后说「继续整理《旧库名》」→ 从 `last_offset` 续传。启动时自动合并 `{进度}.created.json`（已创建文档直接标记完成，防止重复创建）；`toc_map` 保留已建目录结构，新文档直接复用已有 uuid。
 
 ## 并发与内存
 

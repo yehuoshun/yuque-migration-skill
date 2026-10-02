@@ -61,16 +61,6 @@
 
 ## 快速开始
 
-**方式一：下载 Zip（推荐）**
-
-```bash
-wget https://github.com/yehuoshun/yuque-migration-skill/releases/latest/download/yuque-migration-skill.zip
-unzip yuque-migration-skill.zip
-cd yuque-migration-skill
-```
-
-**方式二：Git Clone**
-
 ```bash
 git clone https://github.com/yehuoshun/yuque-migration-skill.git
 cd yuque-migration-skill
@@ -224,8 +214,8 @@ flowchart TD
     S["取一篇文档"] --> A["GET .../docs/{doc_id}?raw=1"]
     A --> A1["二进制检测"]
     A1 --> B{"format?"}
-    B -->|markdown| M["去重: 搜标题 → 200字→500字→全文"]
-    B -->|lake| SKIP_L["⏭ 跳过（无法完美迁移）"]
+    B -->|markdown| M["去重: 搜标题 → 全文比对"]
+    B -->|lake| M["同 markdown 处理"]
     B -->|空body| SK["跳过"]
     B -->|未知| F["记入 failed"]
     M --> M1{"重复?"}
@@ -233,7 +223,7 @@ flowchart TD
     M1 -->|新文档| M2{"跳过LLM?"}
     M1 -->|内容不同| RN["标记需重拟标题"]
     RN --> M2
-    M2 -->|纯代码/附件/<500字| MC["默认未分类"]
+    M2 -->|纯代码/附件| MC["默认未分类"]
     M2 -->|否| M3["🧠 LLM一次调用:\n清洗+分类+截断+重拟标题"]
     M3 --> CR
     MC --> CR["创建到目标库"]

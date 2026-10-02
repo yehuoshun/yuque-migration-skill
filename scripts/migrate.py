@@ -802,7 +802,6 @@ def generate_report(p):
     # 跳过明细
     dup = p.get("skipped_duplicates", [])
     empty = p.get("skipped_empty", [])
-    lake = p.get("skipped_lake", [])
     binary = p.get("skipped_binary", [])
     meaningless = p.get("skipped_meaningless", [])
     unsupported = p.get("skipped_unsupported", [])
@@ -829,7 +828,6 @@ def generate_report(p):
     skip_parts = []
     if dup: skip_parts.append(f"去重 {len(dup)}")
     if empty: skip_parts.append(f"空文档 {len(empty)}")
-    if lake: skip_parts.append(f"Lake {len(lake)}")
     if binary: skip_parts.append(f"二进制 {len(binary)}")
     if meaningless: skip_parts.append(f"无意义 {len(meaningless)}")
     if unsupported: skip_parts.append(f"不支持格式 {len(unsupported)}")
@@ -844,7 +842,6 @@ def generate_report(p):
     sections = [
         ("去重", dup, lambda x: f"- {doc_link(get_id(x), x['title'])} → 匹配: {x.get('matched', '?')}" if 'matched' in x else f"- {doc_link(get_id(x), x['title'])}"),
         ("空文档", empty, lambda x: f"- {doc_link(get_id(x), x['title'])}"),
-        ("Lake 文档", lake, lambda x: f"- {doc_link(get_id(x), x['title'])}（{x.get('reason', '')}）"),
         ("二进制文件", binary, lambda x: f"- {doc_link(get_id(x), x['title'])}"),
         ("无意义文档", meaningless, lambda x: f"- {doc_link(get_id(x), x['title'])}（{x.get('reason', '')}）"),
         ("不支持格式", unsupported, lambda x: f"- {doc_link(get_id(x), x['title'])}（{x.get('format', '?')}）"),
